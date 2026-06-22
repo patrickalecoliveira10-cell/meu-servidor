@@ -1,7 +1,7 @@
 {
-  "name": "scanner-pro-v8-server",
+  "name": "scanner-pro-server",
   "version": "1.0.0",
-  "description": "Servidor de Monitoramento Reativo Scanner Pro V8",
+  "description": "Servidor Scanner Pro v8",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,9 +9,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "axios": "^1.6.7",
-    "ccxt": "^4.2.0"
-  },
-  "engines": {
-    "node": ">=16.0.0"
+    "ccxt": "^4.2.0",
+    "cors": "^2.8.5"
   }
 }
