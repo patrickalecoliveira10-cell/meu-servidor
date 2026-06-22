@@ -1,173 +1,153 @@
 const express = require('express');
 const cors = require('cors');
 const ccxt = require('ccxt');
-
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-// --- ESTADO GLOBAL ---
 let activeConfig = null;
-let exchange = new ccxt.bybit({ 
-    timeout: 20000, 
-    enableRateLimit: true, 
-    options: { 'defaultType': 'linear' } 
-});
-
+let exchange = new ccxt.bybit({ timeout: 20000, enableRateLimit: true, options: { 'defaultType': 'linear' } });
 let eventLog = [];
 let serverData = {
-    price: 0,
-    score: 0,
-    rsi: 50,
-    vol: 1.0,
-    pos: { 
-        side: null, entry: 0, qty: 0, roi: 0, 
-        partials: "0/2", trail: "Inativo", peak: 0 
-    }
+    price: 0, score: 0, rsi: 50, vol: 1.0,
+    pos: { side: null, entry: 0, qty: 0, roi: 0, partials: "0/2", trail: "Inativo" }
 };
 
-// Auxiliar para Logs
-function addLog(msg) {
-    const time = Date.now();
-    console.log(`[${new Date(time).toLocaleTimeString()}] ${msg}`);
-    eventLog.push({ msg, time });
-    if (eventLog.length > 30) eventLog.shift();
+// --- FUNÇÕES TÉCNICAS (IGUAL AO APP) ---
+
+function calculateEMA(data, period) {
+    if (data.length < period) return null;
+    const k = 2 / (period + 1);
+    let ema = data[0];
+    for (let i = 1; i < data.length; i++) {
+        ema = (data[i] * k) + (ema * (1 - k));
+    }
+    return ema;
 }
 
-// Rota de Controle
-app.post('/control', async (req, res) => {
-    const data = req.body;
-    if (data.action === 'start') {
-        activeConfig = {
-            sym: data.sym,
-            bankPct: parseFloat(data.bankPct) || 10,
-            stopPct: parseFloat(data.stopPct) || 2.5,
-            trailAct: parseFloat(data.trailAct) || 2.0,
-            trailPull: parseFloat(data.trailPull) || 1.0,
-            apiKey: data.apiKey,
-            apiSecret: data.apiSecret
-        };
+function calculateVWAP(ohlcv) {
+    let sumTPV = 0, sumVol = 0;
+    ohlcv.forEach(c => {
+        const tp = (c[2] + c[3] + c[4]) / 3; // (H+L+C)/3
+        const v = c[5];
+        sumTPV += tp * v;
+        sumVol += v;
+    });
+    return sumVol > 0 ? sumTPV / sumVol : null;
+}
 
-        if (activeConfig.apiKey && activeConfig.apiSecret) {
-            exchange.apiKey = activeConfig.apiKey;
-            exchange.secret = activeConfig.apiSecret;
+async function getOIGrowing(sym) {
+    try {
+        const oi = await exchange.publicGetV5MarketOpenInterest({ category: 'linear', symbol: sym, interval: '5min', limit: 2 });
+        if (oi.retCode === 0 && oi.result.list.length >= 2) {
+            return parseFloat(oi.result.list[0].openInterest) > parseFloat(oi.result.list[1].openInterest);
         }
+    } catch (e) {}
+    return false;
+}
 
-        addLog(`🚀 Motor Iniciado: ${activeConfig.sym}`);
-        runTradingLoop();
-        res.json({ status: "ok" });
-    } else {
-        activeConfig = null;
-        serverData.pos.side = null;
-        addLog("🛑 Motor Parado.");
-        res.json({ status: "stopped" });
+function calculateRSI(closes, period = 14) {
+    if (closes.length < period + 1) return 50;
+    let gains = 0, losses = 0;
+    for (let i = closes.length - period; i < closes.length; i++) {
+        let diff = closes[i] - closes[i - 1];
+        if (diff >= 0) gains += diff; else losses -= diff;
     }
-});
-
-// Rota de Status (O App consulta aqui)
-app.get('/status', (req, res) => {
-    res.json({ ...serverData, eventLog: eventLog.slice(-10) });
-});
+    let rs = gains / (losses || 1);
+    return 100 - (100 / (1 + rs));
+}
 
 // --- MOTOR DE TRADING ---
+
 async function runTradingLoop() {
     while (activeConfig) {
         try {
             const sym = activeConfig.sym;
-            
-            // 1. Busca Preço e Velas (OHLCV)
             const ticker = await exchange.fetchTicker(sym);
-            const ohlcv = await exchange.fetchOHLCV(sym, '1m', undefined, 30);
+            const ohlcv = await exchange.fetchOHLCV(sym, '1m', undefined, 210); // Busca 210 velas para EMA 200
             
             const price = ticker.last;
             const closes = ohlcv.map(c => c[4]);
             const volumes = ohlcv.map(c => c[5]);
 
-            // 2. Cálculo RSI 14 Real
-            const rsi = calculateRSI(closes);
+            // 1. Cálculos Base
+            const ema200 = calculateEMA(closes, 200);
+            const vwap = calculateVWAP(ohlcv.slice(-30)); // VWAP das últimas 30 velas
+            const rsi = calculateRSI(closes, 14);
+            const oiGrowing = await getOIGrowing(sym);
+            
+            const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+            const volRatio = volumes[volumes.length - 1] / (avgVol || 1);
 
-            // 3. Cálculo de Volume Relativo (Média 20)
-            const avgVol = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
-            const currentVol = volumes[volumes.length - 1];
-            const volRatio = currentVol / (avgVol || 1);
-
-            // 4. Cálculo do Score (Lógica APK 2)
-            // Score aumenta conforme RSI se afasta de 50 + bônus de Volume
-            let baseScore = Math.abs(rsi - 50) * 1.8; 
-            let score = baseScore + (volRatio * 8);
-            if (score > 100) score = 100;
-
-            // Atualiza dados para o Dashboard do App
-            serverData.price = price;
-            serverData.rsi = rsi;
-            serverData.vol = volRatio;
-            serverData.score = score;
-
-            // 5. Gestão de Posição (Trailing / Stop)
-            if (serverData.pos.side) {
-                manageLogic(price);
-            } else {
-                // Gatilho de Entrada Automática (Score > 70 e Volume > 1.1)
-                if (score >= 70 && volRatio >= 1.1) {
-                    const side = rsi > 50 ? 'long' : 'short';
-                    openCloudPos(side, price);
+            // 2. LÓGICA MASTER SCORE (IDÊNTICA AO APP)
+            let masterScore = 0;
+            if (ema200 && vwap) {
+                if (price > ema200) { // Tendência de ALTA
+                    if (price > vwap * 0.998) {
+                        masterScore = 40;
+                        if (oiGrowing) masterScore += 30;
+                        if (volRatio > 1.2) masterScore += 20;
+                        if (rsi < 70) masterScore += 10;
+                    }
+                } else if (price < ema200) { // Tendência de QUEDA
+                    if (price < vwap * 1.002) {
+                        masterScore = 40;
+                        if (oiGrowing) masterScore += 30;
+                        if (volRatio > 1.2) masterScore += 20;
+                        if (rsi > 30) masterScore += 10;
+                    }
                 }
             }
 
-            await new Promise(r => setTimeout(r, 4000)); // Ciclo de 4 segundos
+            // 3. Atualiza Telemetria
+            serverData.price = price;
+            serverData.rsi = rsi;
+            serverData.vol = volRatio;
+            serverData.score = masterScore;
+
+            // 4. Gestão de Posição
+            if (serverData.pos.side) {
+                const p = serverData.pos;
+                const isL = p.side === 'long';
+                p.roi = isL ? ((price - p.entry)/p.entry)*100*10 : ((p.entry - price)/p.entry)*100*10;
+                if (p.roi >= activeConfig.trailAct) p.trail = "ATIVO";
+            } else if (masterScore >= 70) {
+                serverData.pos = { side: (price > ema200 ? 'long' : 'short'), entry: price, qty: 1, roi: 0, partials: "0/2", trail: "Inativo" };
+                addLog(`🔔 ENTRADA MASTER: ${serverData.pos.side.toUpperCase()} em ${price}`);
+            }
+
+            await new Promise(r => setTimeout(r, 5000));
         } catch (e) {
-            console.error("Erro no Loop:", e.message);
             await new Promise(r => setTimeout(r, 5000));
         }
     }
 }
 
-function calculateRSI(closes) {
-    if (closes.length < 15) return 50;
-    let gains = 0, losses = 0;
-    for (let i = closes.length - 14; i < closes.length; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff >= 0) gains += diff; else losses -= diff;
-    }
-    const rs = gains / (losses || 1);
-    return 100 - (100 / (1 + rs));
-}
+// --- ROTAS EXPRESS ---
 
-function openCloudPos(side, price) {
-    serverData.pos = { side, entry: price, qty: 1, roi: 0, partials: "0/2", trail: "Inativo", peak: price };
-    addLog(`🔔 ENTRADA ${side.toUpperCase()} em ${price}`);
-}
-
-function manageLogic(price) {
-    const p = serverData.pos;
-    const isL = p.side === 'long';
-    const c = activeConfig;
-    
-    p.roi = isL ? ((price - p.entry)/p.entry)*100*10 : ((p.entry - price)/p.entry)*100*10;
-
-    if (p.roi <= -c.stopPct) {
-        addLog(`❌ STOP LOSS: ${p.roi.toFixed(2)}%`);
-        p.side = null;
-        return;
-    }
-
-    if (p.trail === 'Inativo' && p.roi >= c.trailAct) {
-        p.trail = 'ATIVO';
-        p.peak = price;
-        addLog(`🎯 Trailing Ativado em ${price}`);
-    }
-
-    if (p.trail === 'ATIVO') {
-        if (isL && price > p.peak) p.peak = price;
-        if (!isL && price < p.peak) p.peak = price;
-
-        const pullback = isL ? ((p.peak - price)/p.peak)*100*10 : ((price - p.peak)/p.peak)*100*10;
-        if (pullback >= c.trailPull) {
-            addLog(`💰 Alvo Batido no Trailing. ROI: ${p.roi.toFixed(2)}%`);
-            p.side = null;
+app.post('/control', (req, res) => {
+    if (req.body.action === 'start') {
+        activeConfig = req.body;
+        if (activeConfig.apiKey && activeConfig.apiSecret) {
+            exchange.apiKey = activeConfig.apiKey; exchange.secret = activeConfig.apiSecret;
         }
+        runTradingLoop();
+        res.json({ status: "ok" });
+    } else {
+        activeConfig = null;
+        res.json({ status: "stopped" });
     }
+});
+
+app.get('/status', (req, res) => {
+    res.json({ ...serverData, eventLog: eventLog.slice(-10) });
+});
+
+function addLog(msg) {
+    eventLog.push({ msg, time: Date.now() });
+    if (eventLog.length > 20) eventLog.shift();
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor Scanner Pro v8 Online na porta ${PORT}`));
+app.listen(PORT, () => console.log("Servidor Master Online"));
