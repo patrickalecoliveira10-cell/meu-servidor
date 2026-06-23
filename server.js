@@ -22,6 +22,16 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
+async function getOITrend(sym) {
+    try {
+        const oi = await exchange.fetchOpenInterestHistory(sym, '1h', undefined, 5);
+        if (oi.length < 2) return false;
+        // Verifica se o Open Interest atual é maior que o anterior
+        return parseFloat(oi[oi.length-1].openInterestValue || oi[oi.length-1].info.open_interest) > 
+               parseFloat(oi[oi.length-2].openInterestValue || oi[oi.length-2].info.open_interest);
+    } catch (e) { return false; }
+}
+
 async function analyzeStrategy() {
     if (!activeConfig.sym) return;
     try {
@@ -34,6 +44,7 @@ async function analyzeStrategy() {
 
         const rsi = TI.RSI.calculate({ values: closes, period: 14 }).pop() || 50;
         const ema200 = TI.EMA.calculate({ values: closes, period: 200 }).pop();
+        
         const vwap = (function(cands) {
             let tpv = 0, tv = 0;
             cands.forEach(c => {
@@ -45,46 +56,70 @@ async function analyzeStrategy() {
 
         const avgVol = candles.slice(-20).reduce((a, b) => a + b[5], 0) / 20;
         const volRatio = lastCandle[5] / (avgVol || 1);
+        const oiGrowing = await getOITrend(activeConfig.sym);
 
-        serverData.rsi = rsi; serverData.vol = volRatio; serverData.vwap = vwap; serverData.ema200 = ema200;
+        serverData.rsi = rsi; 
+        serverData.vol = volRatio; 
+        serverData.vwap = vwap; 
+        serverData.ema200 = ema200;
 
         let sL = 0, sS = 0;
-        if (price > ema200 && price > vwap * 0.998) {
-            sL = 40; if (volRatio > 1.2) sL += 30; if (rsi < 70) sL += 10;
-        } else if (price < ema200 && price < vwap * 1.002) {
-            sS = 40; if (volRatio > 1.2) sS += 30; if (rsi > 30) sS += 10;
-        }
+
+        // LÓGICA DE SCORE IDÊNTICA AO APK
+        // 1. Tendência Base (40 pts)
+        if (price > ema200 && price > vwap * 0.999) sL = 40;
+        if (price < ema200 && price < vwap * 1.001) sS = 40;
+
+        // 2. Open Interest (30 pts)
+        if (sL > 0 && oiGrowing) sL += 30;
+        if (sS > 0 && oiGrowing) sS += 30;
+
+        // 3. Volume Ratio (20 pts se > 1.1)
+        if (sL > 0 && volRatio >= 1.1) sL += 20;
+        if (sS > 0 && volRatio >= 1.1) sS += 20;
+
+        // 4. RSI (10 pts)
+        if (sL > 0 && rsi < 70) sL += 10;
+        if (sS > 0 && rsi > 30) sS += 10;
 
         serverData.score = sL >= sS ? sL : -sS;
+
         const longT = sL >= 70 && volRatio >= 1.1;
         const shortT = sS >= 70 && volRatio >= 1.1;
 
         if (!serverData.pos) {
             if (longT || shortT) {
+                // Noise Shield
                 if (volRatio < 1.5) {
-                    if (longT && price <= prevCandle[2]) return;
+                    if (longT && price <= prevCandle[2]) return; 
                     if (shortT && price >= prevCandle[3]) return;
                 }
-                await openPosition(longT ? 'buy' : 'sell', price);
+                const side = longT ? 'buy' : 'sell';
+                addLog(`🎯 Gatilho detectado: ${side.toUpperCase()} (Score: ${serverData.score})`);
+                await openPosition(side, price);
             }
         } else {
             const p = serverData.pos;
             const isL = p.side === 'buy';
             const roi = (isL ? (price - p.entry)/p.entry : (p.entry - price)/p.entry) * 100 * activeConfig.lev;
-            p.roi = roi; if (roi > p.peak) p.peak = roi;
+            p.roi = roi; 
+            if (roi > p.peak) p.peak = roi;
 
             const contrary = isL ? shortT : longT;
+
             if (roi <= -activeConfig.stopPct) await closePosition("Stop Loss");
             else if (roi < 0 && contrary) {
+                addLog("🔄 FLIP DETECTADO");
                 await closePosition("Flip");
                 await openPosition(isL ? 'sell' : 'buy', price);
             } else if (roi > 0 && p.peak < activeConfig.trailAct && contrary) {
                 await closePosition("Segurança Profit");
             } else if (!p.trailActive && roi >= activeConfig.trailAct) {
-                p.trailActive = true; addLog("🎯 Trailing Ativado!");
+                p.trailActive = true; 
+                addLog("🎯 Trailing Stop Ativado!");
             } else if (p.trailActive) {
-                if (contrary) await closePosition("Sinal Contrário");
-                else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop");
+                if (contrary) await closePosition("Sinal Contrário pós-trailing");
+                else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop (Recuo)");
             }
         }
     } catch (e) { console.log("Erro Loop:", e.message); }
@@ -92,28 +127,28 @@ async function analyzeStrategy() {
 
 async function openPosition(side, price, isPartial = false) {
     try {
-        // CORREÇÃO: CCXT usa .apiKey e .secret
         if (!exchange.apiKey || !exchange.secret) {
-            addLog(`📝 SIMULADO: ${side.toUpperCase()} (Sem Chaves)`);
-            serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, partialEntryCount: 0, partialExitDone: false, trailActive: false };
+            addLog(`📝 SIMULADO: ${side.toUpperCase()}`);
+            serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, partialEntryCount: 0, trailActive: false };
             return;
         }
 
         const balance = await exchange.fetchBalance();
         const usdtFree = balance.free['USDT'] || 0;
         const currentPct = isPartial ? activeConfig.partialBankPct : activeConfig.bankPct;
+        
         let qty = (usdtFree * (currentPct / 100) * activeConfig.lev) / price;
-        qty = qty * 0.98;
+        qty = qty * 0.98; // Buffer de taxa
 
         const pQty = parseFloat(exchange.amountToPrecision(activeConfig.sym, qty));
-        if (pQty <= 0) return addLog("❌ Qtd Insuficiente");
+        if (pQty <= 0) return addLog("❌ Saldo insuficiente para lote mínimo");
 
         await exchange.setLeverage(activeConfig.lev, activeConfig.sym).catch(()=>{});
-        await exchange.createMarketOrder(activeConfig.sym, side, pQty);
+        const order = await exchange.createMarketOrder(activeConfig.sym, side, pQty);
         
-        serverData.pos = { side, entry: price, qty: pQty, roi: 0, peak: 0, partialEntryCount: 0, partialExitDone: false, trailActive: false };
-        addLog(`🔥 ENTROU REAL: ${side.toUpperCase()} (${currentPct}%)`);
-    } catch (e) { addLog(`❌ Erro Bybit: ${e.message}`); }
+        serverData.pos = { side, entry: price, qty: pQty, roi: 0, peak: 0, partialEntryCount: 0, trailActive: false };
+        addLog(`🔥 ORDEM REAL: ${side.toUpperCase()} ${pQty} (${currentPct}%)`);
+    } catch (e) { addLog(`❌ Erro Ordem: ${e.message}`); }
 }
 
 async function closePosition(reason = "") {
@@ -123,8 +158,11 @@ async function closePosition(reason = "") {
             await exchange.createMarketOrder(activeConfig.sym, side, serverData.pos.qty);
         }
         serverData.pos = null;
-        addLog(`🛑 FECHADO: ${reason}`);
-    } catch (e) { serverData.pos = null; }
+        addLog(`🛑 POSIÇÃO FECHADA: ${reason}`);
+    } catch (e) { 
+        addLog(`❌ Erro ao fechar: ${e.message}`);
+        serverData.pos = null; 
+    }
 }
 
 app.post('/control', async (req, res) => {
@@ -132,16 +170,17 @@ app.post('/control', async (req, res) => {
     if (cfg.action === 'start') {
         activeConfig = { ...activeConfig, ...cfg };
         if (cfg.apiKey && cfg.apiSecret) {
-            // CORREÇÃO: Mapeando apiSecret para secret do CCXT
             exchange = new ccxt.bybit({ 
                 apiKey: cfg.apiKey, 
                 secret: cfg.apiSecret, 
                 options: { 'defaultType': 'linear' } 
             });
-            addLog("🔑 Chaves de API validadas no Servidor!");
+            addLog("🔑 Credenciais Bybit Conectadas!");
         }
-        addLog(`🚀 NUVEM MASTER: ${activeConfig.sym}`);
-    } else await closePosition("Comando App");
+        addLog(`🚀 NUVEM ONLINE: ${activeConfig.sym} | Entrada: ${activeConfig.bankPct}%`);
+    } else {
+        await closePosition("Comando Manual App");
+    }
     res.json({ status: "ok" });
 });
 
