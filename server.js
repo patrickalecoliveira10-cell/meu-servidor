@@ -88,10 +88,9 @@ async function analyzeStrategy() {
 
             if (roi <= -activeConfig.stopPct) await closePosition("Stop Loss");
             else if (roi < 0 && contrary) {
-                await closePosition("Flip");
+                await closePosition("Virada (Flip)");
                 await openPosition(isL ? 'sell' : 'buy', price);
             }
-            // Parcial de Aumento
             else if (favor && p.partialEntryCount < 2 && Math.abs((price - p.entry)/p.entry) > 0.005) {
                 await openPosition(p.side, price, true);
             }
@@ -110,13 +109,13 @@ async function analyzeStrategy() {
                 else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop");
             }
         }
-    } catch (e) { console.log("Erro Loop:", e.message); }
+    } catch (e) { console.log("Erro:", e.message); }
 }
 
 async function openPosition(side, price, isPartial = false) {
     try {
         if (!exchange.apiKey || !exchange.secret) {
-            addLog(`📝 SIMULADO: ${isPartial ? 'AUMENTO' : side.toUpperCase()}`);
+            addLog(`📝 SIMULADO: ${isPartial ? 'AUMENTO' : side.toUpperCase()} (Sem Chaves)`);
             if (isPartial) { serverData.pos.partialEntryCount++; return; }
             serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, peakPrice: price, partialEntryCount: 0, trailActive: false, partialExitDone: false };
             return;
@@ -131,7 +130,7 @@ async function openPosition(side, price, isPartial = false) {
         if (pQty <= 0) return addLog("❌ Qtd Insuficiente");
 
         await exchange.setLeverage(activeConfig.lev, activeConfig.sym).catch(()=>{});
-        await exchange.createMarketOrder(activeConfig.sym, side, pQty);
+        const order = await exchange.createMarketOrder(activeConfig.sym, side, pQty);
         
         if (isPartial) {
             const oldQty = serverData.pos.qty;
@@ -144,7 +143,7 @@ async function openPosition(side, price, isPartial = false) {
             serverData.pos = { side, entry: price, qty: pQty, roi: 0, peak: 0, peakPrice: price, partialEntryCount: 0, trailActive: false, partialExitDone: false };
             addLog(`🔥 ENTRADA REAL: ${side.toUpperCase()} OK (${activeConfig.bankPct}%)`);
         }
-    } catch (e) { addLog(`❌ Erro: ${e.message}`); }
+    } catch (e) { addLog(`❌ Erro Ordem: ${e.message}`); }
 }
 
 async function closePosition(reason = "") {
@@ -155,7 +154,7 @@ async function closePosition(reason = "") {
         }
         serverData.pos = null;
         addLog(`🛑 FECHADO: ${reason}`);
-    } catch (e) { serverData.pos = null; }
+    } catch (e) { addLog(`❌ Erro Fechar: ${e.message}`); serverData.pos = null; }
 }
 
 async function executePartial(pct) {
@@ -171,8 +170,13 @@ app.post('/control', async (req, res) => {
     if (cfg.action === 'start') {
         activeConfig = { ...activeConfig, ...cfg };
         if (cfg.apiKey && cfg.apiSecret) {
-            exchange = new ccxt.bybit({ apiKey: cfg.apiKey, secret: cfg.apiSecret, options: { 'defaultType': 'linear' } });
-            addLog("🔑 Chaves de API validadas!");
+            exchange = new ccxt.bybit({ 
+                apiKey: cfg.apiKey, secret: cfg.apiSecret, 
+                options: { 'defaultType': 'linear' } 
+            });
+            addLog("🔑 API REAL CONECTADA!");
+        } else {
+            addLog("⚠️ API AUSENTE - MODO SIMULADO");
         }
         addLog(`🚀 NUVEM LIGADA: ${activeConfig.sym}`);
     } else {
