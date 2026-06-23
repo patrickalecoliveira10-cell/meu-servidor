@@ -7,23 +7,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- ESTADO GLOBAL ---
 let exchange = new ccxt.bybit({ options: { 'defaultType': 'linear' } });
 let activeConfig = { 
-    sym: "", bankPct: 30, partialBankPct: 5, lev: 1, stopPct: 1.5, 
-    trailAct: 1.5, trailPull: 0.8, apiKey: "", apiSecret: "" 
+    sym: "", bankPct: 30, partialBankPct: 5, lev: 1, 
+    stopPct: 1.5, trailAct: 1.5, trailPull: 0.8, apiKey: "", apiSecret: "" 
 };
 
-let serverData = {
-    pos: null, 
-    eventLog: [], 
-    lastPrice: 0,
-    score: 0,
-    rsi: 50,
-    vol: 1.0,
-    vwap: 0,
-    ema200: 0
-};
+let serverData = { pos: null, eventLog: [], lastPrice: 0, score: 0, rsi: 50, vol: 1.0, vwap: 0, ema200: 0 };
 
 function addLog(msg) {
     const logEntry = { time: Date.now(), msg: msg };
@@ -56,20 +46,13 @@ async function analyzeStrategy() {
         const avgVol = candles.slice(-20).reduce((a, b) => a + b[5], 0) / 20;
         const volRatio = lastCandle[5] / (avgVol || 1);
 
-        serverData.rsi = rsi;
-        serverData.vol = volRatio;
-        serverData.vwap = vwap;
-        serverData.ema200 = ema200;
+        serverData.rsi = rsi; serverData.vol = volRatio; serverData.vwap = vwap; serverData.ema200 = ema200;
 
         let sL = 0, sS = 0;
         if (price > ema200 && price > vwap * 0.998) {
-            sL = 40;
-            if (volRatio > 1.2) sL += 30;
-            if (rsi < 70) sL += 10;
+            sL = 40; if (volRatio > 1.2) sL += 30; if (rsi < 70) sL += 10;
         } else if (price < ema200 && price < vwap * 1.002) {
-            sS = 40;
-            if (volRatio > 1.2) sS += 30;
-            if (rsi > 30) sS += 10;
+            sS = 40; if (volRatio > 1.2) sS += 30; if (rsi > 30) sS += 10;
         }
 
         serverData.score = sL >= sS ? sL : -sS;
@@ -78,7 +61,6 @@ async function analyzeStrategy() {
 
         if (!serverData.pos) {
             if (longT || shortT) {
-                // Noise Shield
                 if (volRatio < 1.5) {
                     if (longT && price <= prevCandle[2]) return;
                     if (shortT && price >= prevCandle[3]) return;
@@ -89,8 +71,7 @@ async function analyzeStrategy() {
             const p = serverData.pos;
             const isL = p.side === 'buy';
             const roi = (isL ? (price - p.entry)/p.entry : (p.entry - price)/p.entry) * 100 * activeConfig.lev;
-            p.roi = roi;
-            if (roi > p.peak) p.peak = roi;
+            p.roi = roi; if (roi > p.peak) p.peak = roi;
 
             const contrary = isL ? shortT : longT;
             if (roi <= -activeConfig.stopPct) await closePosition("Stop Loss");
@@ -100,20 +81,20 @@ async function analyzeStrategy() {
             } else if (roi > 0 && p.peak < activeConfig.trailAct && contrary) {
                 await closePosition("Segurança Profit");
             } else if (!p.trailActive && roi >= activeConfig.trailAct) {
-                p.trailActive = true;
-                addLog("🎯 Trailing Ativado!");
+                p.trailActive = true; addLog("🎯 Trailing Ativado!");
             } else if (p.trailActive) {
                 if (contrary) await closePosition("Sinal Contrário");
                 else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop");
             }
         }
-    } catch (e) { console.log("Erro:", e.message); }
+    } catch (e) { console.log("Erro Loop:", e.message); }
 }
 
 async function openPosition(side, price, isPartial = false) {
     try {
-        if (!exchange.apiKey || !exchange.apiSecret) {
-            addLog(`📝 SIMULADO: ${side.toUpperCase()} (Faltam Chaves)`);
+        // CORREÇÃO: CCXT usa .apiKey e .secret
+        if (!exchange.apiKey || !exchange.secret) {
+            addLog(`📝 SIMULADO: ${side.toUpperCase()} (Sem Chaves)`);
             serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, partialEntryCount: 0, partialExitDone: false, trailActive: false };
             return;
         }
@@ -125,7 +106,7 @@ async function openPosition(side, price, isPartial = false) {
         qty = qty * 0.98;
 
         const pQty = parseFloat(exchange.amountToPrecision(activeConfig.sym, qty));
-        if (pQty <= 0) return addLog("❌ Qtd Insuficiente para Bybit");
+        if (pQty <= 0) return addLog("❌ Qtd Insuficiente");
 
         await exchange.setLeverage(activeConfig.lev, activeConfig.sym).catch(()=>{});
         await exchange.createMarketOrder(activeConfig.sym, side, pQty);
@@ -137,7 +118,7 @@ async function openPosition(side, price, isPartial = false) {
 
 async function closePosition(reason = "") {
     try {
-        if (serverData.pos && exchange.apiKey && exchange.apiSecret) {
+        if (serverData.pos && exchange.apiKey && exchange.secret) {
             const side = serverData.pos.side === 'buy' ? 'sell' : 'buy';
             await exchange.createMarketOrder(activeConfig.sym, side, serverData.pos.qty);
         }
@@ -151,14 +132,13 @@ app.post('/control', async (req, res) => {
     if (cfg.action === 'start') {
         activeConfig = { ...activeConfig, ...cfg };
         if (cfg.apiKey && cfg.apiSecret) {
+            // CORREÇÃO: Mapeando apiSecret para secret do CCXT
             exchange = new ccxt.bybit({ 
                 apiKey: cfg.apiKey, 
-                apiSecret: cfg.apiSecret, 
+                secret: cfg.apiSecret, 
                 options: { 'defaultType': 'linear' } 
             });
             addLog("🔑 Chaves de API validadas no Servidor!");
-        } else {
-            addLog("⚠️ Chaves incompletas. Rodando em Simulado.");
         }
         addLog(`🚀 NUVEM MASTER: ${activeConfig.sym}`);
     } else await closePosition("Comando App");
