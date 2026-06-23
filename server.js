@@ -1,5 +1,4 @@
-const express = require('express');
-const ccxt = require('ccxt');
+const express = require('express');const ccxt = require('ccxt');
 const TI = require('technicalindicators');
 const cors = require('cors');
 
@@ -22,13 +21,12 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
+// Funções de Cálculo idênticas ao parAnalyzeTrend do APK
 async function getOITrend(sym) {
     try {
-        const oi = await exchange.fetchOpenInterestHistory(sym, '1h', undefined, 5);
+        const oi = await exchange.fetchOpenInterestHistory(sym, '5m', undefined, 2);
         if (oi.length < 2) return false;
-        // Verifica se o Open Interest atual é maior que o anterior
-        return parseFloat(oi[oi.length-1].openInterestValue || oi[oi.length-1].info.open_interest) > 
-               parseFloat(oi[oi.length-2].openInterestValue || oi[oi.length-2].info.open_interest);
+        return parseFloat(oi[oi.length-1].openInterestValue) > parseFloat(oi[oi.length-2].openInterestValue);
     } catch (e) { return false; }
 }
 
@@ -58,97 +56,89 @@ async function analyzeStrategy() {
         const volRatio = lastCandle[5] / (avgVol || 1);
         const oiGrowing = await getOITrend(activeConfig.sym);
 
-        serverData.rsi = rsi; 
-        serverData.vol = volRatio; 
-        serverData.vwap = vwap; 
-        serverData.ema200 = ema200;
+        serverData.rsi = rsi; serverData.vol = volRatio; serverData.vwap = vwap; serverData.ema200 = ema200;
 
+        // Lógica MASTER do APK
         let sL = 0, sS = 0;
-
-        // LÓGICA DE SCORE IDÊNTICA AO APK
-        // 1. Tendência Base (40 pts)
-        if (price > ema200 && price > vwap * 0.999) sL = 40;
-        if (price < ema200 && price < vwap * 1.001) sS = 40;
-
-        // 2. Open Interest (30 pts)
-        if (sL > 0 && oiGrowing) sL += 30;
-        if (sS > 0 && oiGrowing) sS += 30;
-
-        // 3. Volume Ratio (20 pts se > 1.1)
-        if (sL > 0 && volRatio >= 1.1) sL += 20;
-        if (sS > 0 && volRatio >= 1.1) sS += 20;
-
-        // 4. RSI (10 pts)
-        if (sL > 0 && rsi < 70) sL += 10;
-        if (sS > 0 && rsi > 30) sS += 10;
+        if (price > ema200 && price > vwap * 0.998) {
+            sL = 40;
+            if (oiGrowing) sL += 30;
+            if (volRatio >= 1.1) sL += 20;
+            if (rsi < 70) sL += 10;
+        } else if (price < ema200 && price < vwap * 1.002) {
+            sS = 40;
+            if (oiGrowing) sS += 30;
+            if (volRatio >= 1.1) sS += 20;
+            if (rsi > 30) sS += 10;
+        }
 
         serverData.score = sL >= sS ? sL : -sS;
-
         const longT = sL >= 70 && volRatio >= 1.1;
         const shortT = sS >= 70 && volRatio >= 1.1;
 
         if (!serverData.pos) {
             if (longT || shortT) {
-                // Noise Shield
+                // Noise Shield do APK: Só entra se romper máxima/mínima ou volume for > 1.5x
                 if (volRatio < 1.5) {
-                    if (longT && price <= prevCandle[2]) return; 
+                    if (longT && price <= prevCandle[2]) return;
                     if (shortT && price >= prevCandle[3]) return;
                 }
-                const side = longT ? 'buy' : 'sell';
-                addLog(`🎯 Gatilho detectado: ${side.toUpperCase()} (Score: ${serverData.score})`);
-                await openPosition(side, price);
+                await openPosition(longT ? 'buy' : 'sell', price);
             }
         } else {
             const p = serverData.pos;
             const isL = p.side === 'buy';
             const roi = (isL ? (price - p.entry)/p.entry : (p.entry - price)/p.entry) * 100 * activeConfig.lev;
-            p.roi = roi; 
-            if (roi > p.peak) p.peak = roi;
+            p.roi = roi; if (roi > p.peak) p.peak = roi;
 
             const contrary = isL ? shortT : longT;
 
+            // Stop Loss
             if (roi <= -activeConfig.stopPct) await closePosition("Stop Loss");
+            // Virada (Flip)
             else if (roi < 0 && contrary) {
-                addLog("🔄 FLIP DETECTADO");
                 await closePosition("Flip");
                 await openPosition(isL ? 'sell' : 'buy', price);
-            } else if (roi > 0 && p.peak < activeConfig.trailAct && contrary) {
-                await closePosition("Segurança Profit");
-            } else if (!p.trailActive && roi >= activeConfig.trailAct) {
-                p.trailActive = true; 
-                addLog("🎯 Trailing Stop Ativado!");
+            }
+            // Trailing Stop (Lógica exata do APK)
+            else if (!p.trailActive && roi >= activeConfig.trailAct) {
+                p.trailActive = true;
+                addLog("🎯 Trailing Ativado!");
             } else if (p.trailActive) {
-                if (contrary) await closePosition("Sinal Contrário pós-trailing");
-                else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop (Recuo)");
+                if (contrary) {
+                    if (!p.partialExitDone) {
+                        await executePartial(0.5); // Parcial de 50%
+                        p.partialExitDone = true;
+                        addLog("💰 Parcial 50% pós-trailing");
+                    } else await closePosition("Sinal contrário");
+                }
+                else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop");
             }
         }
-    } catch (e) { console.log("Erro Loop:", e.message); }
+    } catch (e) { console.log("Erro:", e.message); }
 }
 
 async function openPosition(side, price, isPartial = false) {
     try {
         if (!exchange.apiKey || !exchange.secret) {
             addLog(`📝 SIMULADO: ${side.toUpperCase()}`);
-            serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, partialEntryCount: 0, trailActive: false };
+            serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, trailActive: false, partialExitDone: false };
             return;
         }
-
         const balance = await exchange.fetchBalance();
         const usdtFree = balance.free['USDT'] || 0;
         const currentPct = isPartial ? activeConfig.partialBankPct : activeConfig.bankPct;
-        
         let qty = (usdtFree * (currentPct / 100) * activeConfig.lev) / price;
-        qty = qty * 0.98; // Buffer de taxa
-
+        qty = qty * 0.98;
         const pQty = parseFloat(exchange.amountToPrecision(activeConfig.sym, qty));
-        if (pQty <= 0) return addLog("❌ Saldo insuficiente para lote mínimo");
+        if (pQty <= 0) return addLog("❌ Qtd Insuficiente");
 
         await exchange.setLeverage(activeConfig.lev, activeConfig.sym).catch(()=>{});
-        const order = await exchange.createMarketOrder(activeConfig.sym, side, pQty);
+        await exchange.createMarketOrder(activeConfig.sym, side, pQty);
         
-        serverData.pos = { side, entry: price, qty: pQty, roi: 0, peak: 0, partialEntryCount: 0, trailActive: false };
-        addLog(`🔥 ORDEM REAL: ${side.toUpperCase()} ${pQty} (${currentPct}%)`);
-    } catch (e) { addLog(`❌ Erro Ordem: ${e.message}`); }
+        serverData.pos = { side, entry: price, qty: pQty, roi: 0, peak: 0, trailActive: false, partialExitDone: false };
+        addLog(`🔥 ENTROU REAL: ${side.toUpperCase()} (${currentPct}%)`);
+    } catch (e) { addLog(`❌ Erro: ${e.message}`); }
 }
 
 async function closePosition(reason = "") {
@@ -158,11 +148,16 @@ async function closePosition(reason = "") {
             await exchange.createMarketOrder(activeConfig.sym, side, serverData.pos.qty);
         }
         serverData.pos = null;
-        addLog(`🛑 POSIÇÃO FECHADA: ${reason}`);
-    } catch (e) { 
-        addLog(`❌ Erro ao fechar: ${e.message}`);
-        serverData.pos = null; 
-    }
+        addLog(`🛑 FECHADO: ${reason}`);
+    } catch (e) { serverData.pos = null; }
+}
+
+async function executePartial(pct) {
+    try {
+        const q = parseFloat(exchange.amountToPrecision(activeConfig.sym, serverData.pos.qty * pct));
+        await exchange.createMarketOrder(activeConfig.sym, serverData.pos.side === 'buy' ? 'sell' : 'buy', q);
+        serverData.pos.qty -= q;
+    } catch (e) {}
 }
 
 app.post('/control', async (req, res) => {
@@ -170,23 +165,15 @@ app.post('/control', async (req, res) => {
     if (cfg.action === 'start') {
         activeConfig = { ...activeConfig, ...cfg };
         if (cfg.apiKey && cfg.apiSecret) {
-            exchange = new ccxt.bybit({ 
-                apiKey: cfg.apiKey, 
-                secret: cfg.apiSecret, 
-                options: { 'defaultType': 'linear' } 
-            });
-            addLog("🔑 Credenciais Bybit Conectadas!");
+            exchange = new ccxt.bybit({ apiKey: cfg.apiKey, secret: cfg.apiSecret, options: { 'defaultType': 'linear' } });
+            addLog("🔑 Chaves de API validadas!");
         }
-        addLog(`🚀 NUVEM ONLINE: ${activeConfig.sym} | Entrada: ${activeConfig.bankPct}%`);
-    } else {
-        await closePosition("Comando Manual App");
-    }
+        addLog(`🚀 NUVEM MASTER LIGADA: ${activeConfig.sym}`);
+    } else await closePosition("Comando App");
     res.json({ status: "ok" });
 });
 
 app.get('/status', (req, res) => res.json(serverData));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    setInterval(analyzeStrategy, 5000);
-});
+app.listen(PORT, () => { setInterval(analyzeStrategy, 5000); });
