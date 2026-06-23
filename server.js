@@ -1,203 +1,170 @@
 const express = require('express');
 const ccxt = require('ccxt');
-const bodyParser = require('body-parser');
+const TI = require('technicalindicators');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
-// --- ESTADO GLOBAL DO SERVIDOR ---
-let exchange = null;
-let activeConfig = {
-    sym: "",
-    bankPct: 10,     // % da banca por trade
-    lev: 10,         // Alavancagem
-    stopPct: 2.5,    // Stop Loss Fixo
-    trailAct: 2,     // Ativa Trailing com 2% de ROI
-    trailPull: 1,    // Recuo de 1% para fechar
-    apiKey: "",
-    apiSecret: ""
-};
+let exchange = new ccxt.bybit({ options: { 'defaultType': 'linear' } });
+let activeConfig = { sym: "", bankPct: 10, lev: 10, stopPct: 2.5, trailAct: 2, trailPull: 1 };
+let serverData = { pos: null, logs: [], lastPrice: 0, score: 0, rsi: 50, vol: 1.0 };
 
-let serverData = {
-    pos: null, 
-    logs: [],
-    lastPrice: 0,
-    score: 0,
-    rsi: 50,
-    vol: 1.0
-};
-
-// --- SISTEMA DE LOGS ---
 function addLog(msg) {
-    const time = new Date().toLocaleTimeString();
-    const logMsg = `[${time}] ${msg}`;
-    serverData.logs.unshift(logMsg);
+    const log = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    serverData.logs.unshift(log);
     if (serverData.logs.length > 50) serverData.logs.pop();
-    console.log(logMsg);
+    console.log(log);
 }
 
-// --- CONEXÃO COM A BYBIT ---
-async function initExchange(key, secret) {
+// --- LÓGICA DE ESTRATÉGIA (O Cérebro na Nuvem) ---
+async function analyzeStrategy() {
+    if (!activeConfig.sym) return;
     try {
-        exchange = new ccxt.bybit({
-            apiKey: key,
-            apiSecret: secret,
-            options: { 'defaultType': 'linear' }
-        });
-        addLog("✅ API Bybit Conectada!");
-    } catch (e) {
-        addLog(`❌ Erro API: ${e.message}`);
+        const candles = await exchange.fetchOHLCV(activeConfig.sym, '1m', undefined, 210);
+        const closes = candles.map(c => c[4]);
+        const volumes = candles.map(c => c[5]);
+        const prices = candles.map(c => ({ high: c[2], low: c[3], close: c[4], volume: c[5] }));
+
+        serverData.lastPrice = closes[closes.length - 1];
+
+        // 1. RSI
+        const rsi = TI.RSI.calculate({ values: closes, period: 14 }).pop();
+        serverData.rsi = rsi;
+
+        // 2. EMA 200
+        const ema200 = TI.EMA.calculate({ values: closes, period: 200 }).pop();
+
+        // 3. Volume Ratio (Média de 20 períodos)
+        const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+        const currentVol = volumes[volumes.length - 1];
+        serverData.vol = currentVol / avgVol;
+
+        // 4. CÁLCULO DO MASTER SCORE
+        let score = 0;
+        if (serverData.lastPrice > ema200) score += 30; else score -= 30; // Tendência
+        if (rsi < 30) score += 20; if (rsi > 70) score -= 20; // Exaustão
+        if (serverData.vol > 1.1) score += 20; // Volume
+
+        serverData.score = score;
+
+        // --- GESTÃO DE POSIÇÃO ---
+        if (!serverData.pos) {
+            if (score >= 70) await openPosition('buy', serverData.lastPrice);
+            if (score <= -70) await openPosition('sell', serverData.lastPrice);
+        } else {
+            await managePosition(serverData.lastPrice);
+            
+            // LÓGICA DE FLIP (Virada)
+            if (serverData.pos.side === 'buy' && score <= -70 && serverData.pos.roi < 0) {
+                addLog("🔄 FLIP DETECTADO: Virando para SHORT");
+                await closePosition();
+                await openPosition('sell', serverData.lastPrice);
+            } else if (serverData.pos.side === 'sell' && score >= 70 && serverData.pos.roi < 0) {
+                addLog("🔄 FLIP DETECTADO: Virando para LONG");
+                await closePosition();
+                await openPosition('buy', serverData.lastPrice);
+            }
+        }
+    } catch (e) { console.error("Erro Estratégia:", e.message); }
+}
+
+async function managePosition(price) {
+    const p = serverData.pos;
+    const isL = p.side === 'buy';
+    const roi = (isL ? (price - p.entry) / p.entry : (p.entry - price) / p.entry) * 100 * activeConfig.lev;
+    p.roi = roi;
+
+    if (roi > p.peak) p.peak = roi;
+
+    // 1. Stop Loss
+    if (roi <= -activeConfig.stopPct) {
+        addLog(`📉 Stop Loss atingido: ${roi.toFixed(2)}%`);
+        await closePosition();
+    }
+
+    // 2. Trailing Stop + Saída Parcial 50%
+    if (p.peak >= activeConfig.trailAct) {
+        if (!p.partialExitDone) {
+            addLog("💰 ROI de Trailing atingido! Realizando 50% de lucro...");
+            await executePartialExit(0.5);
+            p.partialExitDone = true;
+        }
+        
+        p.trail = "ATIVO 🔥";
+        if (roi <= (p.peak - activeConfig.trailPull)) {
+            addLog(`🎯 Trailing Stop acionado no lucro: ${roi.toFixed(2)}%`);
+            await closePosition();
+        }
     }
 }
 
-// --- EXECUÇÃO DE ORDENS (Cálculo de Lote Real) ---
+async function executePartialExit(percent) {
+    try {
+        if (exchange.apiKey && serverData.pos) {
+            const closeQty = serverData.pos.qty * percent;
+            const side = serverData.pos.side === 'buy' ? 'sell' : 'buy';
+            await exchange.createMarketOrder(activeConfig.sym, side, closeQty);
+            serverData.pos.qty -= closeQty;
+            addLog(`✅ Saída Parcial de ${percent*100}% concluída.`);
+        }
+    } catch (e) { addLog("❌ Erro Parcial: " + e.message); }
+}
+
 async function openPosition(side, price) {
     try {
-        if (!exchange || !exchange.apiKey) {
-            addLog("⚠️ MODO SIMULADO: Sem chaves de API.");
-            serverData.pos = { side, entry: price, qty: 1, roi: 0, trail: "Simulado", peak: 0 };
+        if (!exchange.apiKey) {
+            addLog(`⚠️ SIMULAÇÃO: Entrada em ${side}`);
+            serverData.pos = { side, entry: price, qty: 100, roi: 0, peak: 0, trail: "Simulado", partialExitDone: false };
             return;
         }
-
-        // 1. Busca saldo real USDT
         const balance = await exchange.fetchBalance();
-        const usdtFree = balance.free['USDT'] || 0;
+        const usdt = balance.free['USDT'] || 0;
+        const qty = (usdt * (activeConfig.bankPct/100) * activeConfig.lev) / price;
+        const precisionQty = parseFloat(exchange.amountToPrecision(activeConfig.sym, qty));
 
-        if (usdtFree < 5) {
-            addLog(`❌ Saldo insuficiente na Bybit: ${usdtFree.toFixed(2)} USDT`);
-            return;
-        }
-
-        // 2. Calcula Quantidade: (Saldo * % da Banca * Alavancagem) / Preço
-        const pct = parseFloat(activeConfig.bankPct) / 100;
-        const lev = parseFloat(activeConfig.lev || 10);
-        let qty = (usdtFree * pct * lev) / price;
-
-        // 3. Ajusta precisão conforme regras da Bybit
-        const markets = await exchange.loadMarkets();
-        qty = parseFloat(exchange.amountToPrecision(activeConfig.sym, qty));
-
-        addLog(`📡 Abrindo ${side.toUpperCase()} | Banca: ${usdtFree.toFixed(2)} USDT | Qtd: ${qty}`);
-
-        // Define a alavancagem na corretora
-        try { await exchange.setLeverage(lev, activeConfig.sym); } catch(e) {}
-
-        // Envia ordem a mercado
-        const order = await exchange.createMarketOrder(activeConfig.sym, (side === 'buy' ? 'buy' : 'sell'), qty);
+        await exchange.setLeverage(activeConfig.lev, activeConfig.sym).catch(()=>{});
+        await exchange.createMarketOrder(activeConfig.sym, side, precisionQty);
         
-        addLog(`🔥 ORDEM EXECUTADA NA BYBIT!`);
-        serverData.pos = { 
-            side, 
-            entry: price, 
-            qty: qty, 
-            roi: 0, 
-            trail: "Inativo", 
-            peak: 0 
-        };
-    } catch (e) {
-        addLog(`❌ ERRO BYBIT: ${e.message}`);
-    }
+        addLog(`🔥 POSIÇÃO REAL ABERTA: ${side.toUpperCase()} ${precisionQty}`);
+        serverData.pos = { side, entry: price, qty: precisionQty, roi: 0, peak: 0, trail: "Inativo", partialExitDone: false };
+    } catch (e) { addLog("❌ Erro Entrada: " + e.message); }
 }
 
-// --- FECHAMENTO DE POSIÇÃO ---
 async function closePosition() {
     try {
-        if (serverData.pos && exchange && exchange.apiKey) {
+        if (serverData.pos && exchange.apiKey) {
             const side = serverData.pos.side === 'buy' ? 'sell' : 'buy';
             await exchange.createMarketOrder(activeConfig.sym, side, serverData.pos.qty);
-            addLog(`🛑 Posição encerrada com sucesso.`);
         }
+        addLog("🛑 Posição Encerrada.");
         serverData.pos = null;
-    } catch (e) {
-        addLog(`❌ Erro ao fechar: ${e.message}`);
-    }
+    } catch (e) { addLog("❌ Erro ao fechar: " + e.message); }
 }
 
-// --- MONITORAMENTO EM TEMPO REAL (Loop) ---
-async function mainLoop() {
-    if (!activeConfig.sym || !exchange) return;
-
-    try {
-        const ticker = await exchange.fetchTicker(activeConfig.sym);
-        const price = ticker.last;
-        serverData.lastPrice = price;
-
-        if (serverData.pos) {
-            const p = serverData.pos;
-            const isL = p.side === 'buy';
-            
-            // ROI Realizado
-            const diff = isL ? (price - p.entry) / p.entry : (p.entry - price) / p.entry;
-            p.roi = diff * 100 * activeConfig.lev;
-
-            // Trailing Stop Logic
-            if (p.roi > p.peak) p.peak = p.roi;
-
-            // Stop Loss Fixo
-            if (p.roi <= -activeConfig.stopPct) {
-                addLog(`📉 Stop Loss acionado! ROI: ${p.roi.toFixed(2)}%`);
-                await closePosition();
-            }
-
-            // Trailing Stop Ativo
-            if (p.peak >= activeConfig.trailAct) {
-                p.trail = "ATIVO 🔥";
-                if (p.roi <= (p.peak - activeConfig.trailPull)) {
-                    addLog(`🎯 Trailing Stop: Lucro garantido! ROI: ${p.roi.toFixed(2)}%`);
-                    await closePosition();
-                }
-            }
-        }
-    } catch (e) {}
-}
-
-// --- ENDPOINTS DE COMUNICAÇÃO ---
-
-// Iniciar/Parar via App
+// --- ENDPOINTS ---
 app.post('/control', async (req, res) => {
     const cfg = req.body;
     if (cfg.action === 'start') {
         activeConfig = { ...activeConfig, ...cfg };
-        if (cfg.apiKey && cfg.apiSecret) await initExchange(cfg.apiKey, cfg.apiSecret);
-        addLog(`🚀 Robô Iniciado em ${activeConfig.sym}`);
+        if (cfg.apiKey) {
+            exchange = new ccxt.bybit({ apiKey: cfg.apiKey, apiSecret: cfg.apiSecret, options: { 'defaultType': 'linear' } });
+            addLog("🔑 API Keys configuradas.");
+        }
+        addLog(`🚀 ROBÔ AUTÔNOMO INICIADO: ${activeConfig.sym}`);
     } else if (cfg.action === 'stop') {
         activeConfig.sym = "";
         await closePosition();
-        addLog(`🛑 Robô Desligado.`);
-    } else if (cfg.action === 'close_now') {
-        await closePosition();
+        addLog("🛑 Robô desligado via App.");
     }
     res.json({ status: "ok" });
 });
 
-// Envia status para o App (Preço, Logs, ROI)
-app.get('/status', (req, res) => {
-    res.json(serverData);
-});
-
-// Recebe Indicadores e Gatilhos do App
-app.post('/update_score', async (req, res) => {
-    serverData.score = req.body.score || 0;
-    serverData.rsi = req.body.rsi || 50;
-    serverData.vol = req.body.vol || 1.0;
-
-    // GATILHO AUTOMÁTICO DE ENTRADA (Baseado no sinal do App)
-    if (!serverData.pos && activeConfig.sym) {
-        if (serverData.score >= 75) {
-            addLog(`⚡ Sinal de COMPRA recebido (Score: ${serverData.score})`);
-            await openPosition('buy', serverData.lastPrice);
-        } else if (serverData.score <= -75) {
-            addLog(`⚡ Sinal de VENDA recebido (Score: ${serverData.score})`);
-            await openPosition('sell', serverData.lastPrice);
-        }
-    }
-    res.json({ status: "ok" });
-});
+app.get('/status', (req, res) => res.json(serverData));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
-    setInterval(mainLoop, 3000); 
+    console.log(`Servidor Autônomo na porta ${PORT}`);
+    setInterval(analyzeStrategy, 5000); // Analisa a cada 5 segundos
 });
