@@ -1,5 +1,5 @@
-{  "name": "bybit-ultra-master-autonomous",
-  "version": "9.0.0",
+{"name": "bybit-ultra-master-autonomous",
+  "version": "9.5.0",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
   "dependencies": {
