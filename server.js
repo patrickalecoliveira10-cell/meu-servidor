@@ -1,6 +1,5 @@
 const express = require('express');
-const ccxt = require('ccxt');
-const TI = require('technicalindicators');
+const ccxt = require('ccxt');const TI = require('technicalindicators');
 const cors = require('cors');
 
 const app = express();
@@ -22,6 +21,14 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
+// Limpa dados para evitar bugs de persistência após o servidor "acordar"
+function resetServerState() {
+    serverData.score = 0;
+    serverData.rsi = 50;
+    serverData.vol = 1.0;
+    addLog("🧹 Estado de indicadores resetado para nova sessão.");
+}
+
 async function getOITrend(sym) {
     try {
         const oi = await exchange.fetchOpenInterestHistory(sym, '5m', undefined, 2);
@@ -34,6 +41,8 @@ async function analyzeStrategy() {
     if (!activeConfig.sym) return;
     try {
         const candles = await exchange.fetchOHLCV(activeConfig.sym, '1m', undefined, 210);
+        if (!candles || candles.length < 200) return;
+
         const closes = candles.map(c => c[4]);
         const price = closes[closes.length - 1];
         const prevCandle = candles[candles.length - 2];
@@ -57,6 +66,7 @@ async function analyzeStrategy() {
 
         serverData.rsi = rsi; serverData.vol = volRatio; serverData.vwap = vwap; serverData.ema200 = ema200;
 
+        // Lógica de Score MASTER
         let sL = 0, sS = 0;
         if (price > ema200 && price > vwap * 0.998) {
             sL = 40; if (oiGrowing) sL += 30; if (volRatio >= 1.1) sL += 20; if (rsi < 70) sL += 10;
@@ -69,7 +79,7 @@ async function analyzeStrategy() {
         const shortT = sS >= 70 && volRatio >= 1.1;
 
         if (!serverData.pos) {
-            if (longT || shortT) {
+            if ((longT || shortT) && !(longT && shortT)) {
                 if (volRatio < 1.5) {
                     if (longT && price <= prevCandle[2]) return;
                     if (shortT && price >= prevCandle[3]) return;
@@ -83,8 +93,8 @@ async function analyzeStrategy() {
             p.roi = roi; 
             if (roi > p.peak) { p.peak = roi; p.peakPrice = price; }
 
-            const contrary = isL ? shortT : longT;
-            const favor = isL ? longT : shortT;
+            const contrary = isL ? (sS >= 70) : (sL >= 70);
+            const favor = isL ? (sL >= 70) : (sS >= 70);
 
             if (roi <= -activeConfig.stopPct) await closePosition("Stop Loss");
             else if (roi < 0 && contrary) {
@@ -94,7 +104,7 @@ async function analyzeStrategy() {
             else if (favor && p.partialEntryCount < 2 && Math.abs((price - p.entry)/p.entry) > 0.005) {
                 await openPosition(p.side, price, true);
             }
-            else if (roi > 0 && p.peak < activeConfig.trailAct && contrary) await closePosition("Segurança Profit");
+            else if (roi > 0 && !p.trailActive && contrary) await closePosition("Segurança Profit");
             else if (!p.trailActive && roi >= activeConfig.trailAct) {
                 p.trailActive = true;
                 addLog("🎯 Trailing Ativado!");
@@ -109,13 +119,13 @@ async function analyzeStrategy() {
                 else if ((p.peak - roi) >= activeConfig.trailPull) await closePosition("Trailing Stop");
             }
         }
-    } catch (e) { console.log("Erro:", e.message); }
+    } catch (e) { console.log("Erro Análise:", e.message); }
 }
 
 async function openPosition(side, price, isPartial = false) {
     try {
         if (!exchange.apiKey || !exchange.secret) {
-            addLog(`📝 SIMULADO: ${isPartial ? 'AUMENTO' : side.toUpperCase()} (Sem Chaves)`);
+            addLog(`📝 SIMULADO: ${isPartial ? 'AUMENTO' : side.toUpperCase()}`);
             if (isPartial) { serverData.pos.partialEntryCount++; return; }
             serverData.pos = { side, entry: price, qty: 1, roi: 0, peak: 0, peakPrice: price, partialEntryCount: 0, trailActive: false, partialExitDone: false };
             return;
@@ -123,6 +133,7 @@ async function openPosition(side, price, isPartial = false) {
         const balance = await exchange.fetchBalance();
         const usdtFree = balance.free['USDT'] || 0;
         const currentPct = isPartial ? activeConfig.partialBankPct : activeConfig.bankPct;
+
         let qty = (usdtFree * (currentPct / 100) * activeConfig.lev) / price;
         qty = qty * 0.98;
 
@@ -138,10 +149,10 @@ async function openPosition(side, price, isPartial = false) {
             serverData.pos.entry = (oldQty * oldEntry + pQty * price) / (oldQty + pQty);
             serverData.pos.qty += pQty;
             serverData.pos.partialEntryCount++;
-            addLog(`✅ PARCIAL AUMENTO: ${side.toUpperCase()} OK`);
+            addLog(`✅ PARCIAL AUMENTO OK`);
         } else {
             serverData.pos = { side, entry: price, qty: pQty, roi: 0, peak: 0, peakPrice: price, partialEntryCount: 0, trailActive: false, partialExitDone: false };
-            addLog(`🔥 ENTRADA REAL: ${side.toUpperCase()} OK (${activeConfig.bankPct}%)`);
+            addLog(`🔥 ENTRADA REAL: ${side.toUpperCase()} OK`);
         }
     } catch (e) { addLog(`❌ Erro Ordem: ${e.message}`); }
 }
@@ -168,19 +179,24 @@ async function executePartial(pct) {
 app.post('/control', async (req, res) => {
     const cfg = req.body;
     if (cfg.action === 'start') {
+        if (!serverData.pos) resetServerState();
         activeConfig = { ...activeConfig, ...cfg };
         if (cfg.apiKey && cfg.apiSecret) {
             exchange = new ccxt.bybit({ 
                 apiKey: cfg.apiKey, secret: cfg.apiSecret, 
                 options: { 'defaultType': 'linear' } 
             });
-            addLog("🔑 API REAL CONECTADA!");
+            try {
+                await exchange.fetchBalance();
+                addLog("🔑 API REAL CONECTADA!");
+            } catch(e) { addLog("⚠️ ERRO API: Chaves inválidas."); }
         } else {
-            addLog("⚠️ API AUSENTE - MODO SIMULADO");
+            addLog("⚠️ MODO SIMULADO ATIVO");
         }
-        addLog(`🚀 NUVEM LIGADA: ${activeConfig.sym}`);
+        addLog(`🚀 MONITORANDO: ${activeConfig.sym}`);
     } else {
         await closePosition("Comando App");
+        activeConfig.sym = ""; 
     }
     res.json({ status: "ok" });
 });
@@ -188,4 +204,7 @@ app.post('/control', async (req, res) => {
 app.get('/status', (req, res) => res.json({ ...serverData, config: activeConfig }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { setInterval(analyzeStrategy, 5000); });
+app.listen(PORT, () => { 
+    addLog("🌐 Servidor MASTER Online");
+    setInterval(analyzeStrategy, 5000); 
+});
