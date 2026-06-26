@@ -1,6 +1,6 @@
 const express = require('express');
-const axios = require('axios');const crypto = require('crypto');
-const cors = require('cors');
+const axios = require('axios');
+const crypto = require('crypto');const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
@@ -9,65 +9,16 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// Estado Global do Monitoramento
 let MONITOR = {
     active: false,
     symbol: null,
     config: { stopPct: 2.5, trailAct: 2, trailPull: 1, lev: 5 },
-    position: null,
-    lastUpdate: null
+    position: null
 };
 
-// --- ROTAS DE COMUNICAÇÃO ---
-
-// Rota que o App consome para atualizar o gráfico e ROI
-app.get('/status', (req, res) => {
-    res.json({ 
-        active: MONITOR.active, 
-        symbol: MONITOR.symbol,
-        position: MONITOR.position,
-        uptime: process.uptime()
-    });
-});
-
-// Sincronização vinda do App
-app.post('/sync-par', async (req, res) => {
-    try {
-        const { symbol, active, config, position } = req.body;
-        if (active === true) {
-            MONITOR.symbol = symbol;
-            MONITOR.config = {
-                stopPct: parseFloat(config?.stopPct) || 2.5,
-                trailAct: parseFloat(config?.trailAct) || 2,
-                trailPull: parseFloat(config?.trailPull) || 1,
-                lev: parseInt(config?.lev) || 5
-            };
-            MONITOR.position = position ? {
-                side: position.side,
-                entry: parseFloat(position.entry),
-                qty: parseFloat(position.qty),
-                peak: parseFloat(position.peak || position.entry),
-                trailActive: !!position.trailActive
-            } : null;
-            MONITOR.active = true;
-            console.log(`[CLOUD] Monitoramento ativo: ${symbol}`);
-        } else {
-            MONITOR.active = false;
-            MONITOR.position = null;
-            console.log("[CLOUD] Monitoramento parado");
-        }
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-app.get('/', (req, res) => res.send("Bybit Scanner Pro v8 Server Online"));
-
-// --- LÓGICA DE EXECUÇÃO BYBIT ---
-
+// --- HELPER BYBIT (GERADOR DE ASSINATURA) ---
 function getSignature(parameters, secret, timestamp) {
-    return crypto.createHmac('sha256', secret || '').update(timestamp + process.env.BYBIT_KEY + '5000' + parameters).digest('hex');
+    return crypto.createHmac('sha256', secret).update(timestamp + process.env.BYBIT_KEY + '5000' + parameters).digest('hex');
 }
 
 async function bybitRequest(method, endpoint, data = {}) {
@@ -82,7 +33,13 @@ async function bybitRequest(method, endpoint, data = {}) {
         const res = await axios({
             method,
             url: baseUrl + endpoint + (method === 'GET' ? '?' + parameters : ''),
-            headers: { 'X-BAPI-API-KEY': key, 'X-BAPI-SIGN': sign, 'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': '5000', 'Content-Type': 'application/json' },
+            headers: { 
+                'X-BAPI-API-KEY': key, 
+                'X-BAPI-SIGN': sign, 
+                'X-BAPI-TIMESTAMP': timestamp, 
+                'X-BAPI-RECV-WINDOW': '5000', 
+                'Content-Type': 'application/json' 
+            },
             data: method !== 'GET' ? data : undefined,
             timeout: 5000
         });
@@ -90,46 +47,48 @@ async function bybitRequest(method, endpoint, data = {}) {
     } catch (e) { return { error: e.message }; }
 }
 
-// Loop de Monitoramento (5s)
-setInterval(async () => {
-    if (!MONITOR.active || !MONITOR.symbol || !MONITOR.position) return;
+// --- LOGICA DE ABERTURA DE ORDEM ---
+async function parServerOpenPosition(side, symbol, lev) {
+    console.log(`[CLOUD] Abrindo ordem de ${side} para ${symbol}`);
+    // 1. Ajusta Alavancagem antes
+    await bybitRequest('POST', '/v5/position/set-leverage', { category: 'linear', symbol, buyLeverage: lev.toString(), sellLeverage: lev.toString() });
+    
+    // 2. Aqui você deve definir a quantidade (Qty) baseada no seu saldo ou config
+    // Exemplo simplificado: Ordem a Mercado
+    const order = await bybitRequest('POST', '/v5/order/create', {
+        category: 'linear',
+        symbol: symbol,
+        side: side.charAt(0).toUpperCase() + side.slice(1).toLowerCase(), // Buy ou Sell
+        orderType: 'Market',
+        qty: "0.01", // <--- AJUSTE A QUANTIDADE AQUI OU ENVIE VIA APP
+        timeInForce: 'GTC'
+    });
+    return order;
+}
 
-    try {
-        const ticker = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear', symbol: MONITOR.symbol });
-        if (!ticker || ticker.retCode !== 0) return;
+// --- ROTAS ---
+app.get('/status', (req, res) => res.json({ active: MONITOR.active, symbol: MONITOR.symbol, position: MONITOR.position }));
 
-        const price = parseFloat(ticker.result.list[0].lastPrice);
-        const pos = MONITOR.position;
-        const isLong = pos.side.toLowerCase() === 'long';
-        const pVar = isLong ? (price - pos.entry)/pos.entry : (pos.entry - price)/pos.entry;
-        const roi = pVar * 100 * MONITOR.config.lev;
-
-        // 1. Stop Loss
-        if (roi <= -MONITOR.config.stopPct) {
-            console.log(`[STOP] Executando fechamento em ${price}`);
-            MONITOR.position = null; // Em produção, aqui chamaria a ordem de venda da Bybit
-            return;
-        }
-
-        // 2. Trailing Stop
-        if (!pos.trailActive && roi >= MONITOR.config.trailAct) {
-            pos.trailActive = true;
-            console.log("[TRAIL] Ativado");
-        }
-
-        if (pos.trailActive) {
-            if (isLong && price > pos.peak) pos.peak = price;
-            if (!isLong && price < pos.peak) pos.peak = price;
-
-            const pbPct = isLong ? (pos.peak - price)/pos.peak*100 : (price - pos.peak)/pos.peak*100;
-            const pbRoi = pbPct * MONITOR.config.lev;
-
-            if (pbRoi >= MONITOR.config.trailPull) {
-                console.log(`[TAKE] Trailing batido em ${price}`);
-                MONITOR.position = null;
+app.post('/sync-par', async (req, res) => {
+    const { symbol, active, config, position, forceEntry } = req.body;
+    if (active) {
+        MONITOR.symbol = symbol;
+        MONITOR.config = config;
+        MONITOR.active = true;
+        // Se o App enviou uma posição ou um comando de entrada forçada
+        if (position) MONITOR.position = position;
+        if (forceEntry) {
+            const side = forceEntry.side; // LONG ou SHORT
+            const order = await parServerOpenPosition(side === 'LONG' ? 'Buy' : 'Sell', symbol, config.lev);
+            if (order.retCode === 0) {
+                MONITOR.position = { side: side.toLowerCase(), entry: parseFloat(order.result.price) || 0, qty: "0.01", peak: 0, trailActive: false };
             }
         }
-    } catch (e) { console.error("Erro Ciclo:", e.message); }
-}, 5000);
+    } else {
+        MONITOR.active = false;
+        MONITOR.position = null;
+    }
+    res.json({ success: true });
+});
 
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor Ativo na porta ${PORT}`));
