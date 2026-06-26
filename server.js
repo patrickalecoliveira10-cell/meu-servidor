@@ -1,5 +1,6 @@
 const express = require('express');
-const axios = require('axios');const crypto = require('crypto');
+const axios = require('axios');
+const crypto = require('crypto');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -16,16 +17,16 @@ const IS_TESTNET = process.env.USE_TESTNET === 'true';
 
 console.log("🚀 Sniper Cloud Iniciado. Chave API presente:", !!BYBIT_KEY);
 
-// ESTADO GLOBAL DO SERVIDOR
+// ESTADO GLOBAL DO SERVIDOR (O Cérebro)
 let MONITOR = {
     active: false,
     symbol: null,
     config: { stopPct: 2.5, trailAct: 2, trailPull: 1, lev: 5 },
-    position: null, // { side, entry, qty, peak, trailActive, partialEntryCount, partialExitDone }
+    position: null, // { side, entry, qty, peak, trailActive, partialEntryCount }
     logs: []
 };
 
-// Funções de Log para o App ler
+// Funções de Log para o App sincronizar
 function serverLog(msg, type = 'info') {
     const time = new Date().toLocaleTimeString();
     const entry = { time, msg, type };
@@ -78,6 +79,7 @@ async function bybitRequest(method, endpoint, data = {}) {
             data: method !== 'GET' ? data : undefined,
             timeout: 5000
         });
+        if (res.data.retCode !== 0) serverLog(`Bybit: ${res.data.retMsg}`, 'err');
         return res.data;
     } catch (e) { 
         serverLog(`Falha API: ${e.message}`, 'err');
@@ -89,14 +91,10 @@ async function bybitRequest(method, endpoint, data = {}) {
 async function openOrder(side, symbol, lev, qty) {
     serverLog(`[EXEC] Abrindo ${side} em ${symbol} (Qty: ${qty})`, 'warn');
     await bybitRequest('POST', '/v5/position/set-leverage', { category: 'linear', symbol, buyLeverage: lev.toString(), sellLeverage: lev.toString() });
-    
-    const resp = await bybitRequest('POST', '/v5/order/create', {
+    return await bybitRequest('POST', '/v5/order/create', {
         category: 'linear', symbol, side: side === 'LONG' ? 'Buy' : 'Sell',
         orderType: 'Market', qty: qty.toString(), timeInForce: 'GTC'
     });
-    
-    if (resp.retCode !== 0) serverLog(`Erro Ordem: ${resp.retMsg}`, 'err');
-    return resp;
 }
 
 async function closeOrder(symbol, side, qty) {
@@ -107,7 +105,7 @@ async function closeOrder(symbol, side, qty) {
     });
 }
 
-// --- CICLO AUTÔNOMO DE MONITORAMENTO ---
+// --- CICLO AUTÔNOMO SNIPER ---
 async function serverCycle() {
     if (!MONITOR.active || !MONITOR.symbol) return;
 
@@ -124,14 +122,12 @@ async function serverCycle() {
         const price = parseFloat(tickers.result.list[0].lastPrice);
         const closes = candles.map(c => c.close);
 
-        // Indicadores Sniper
         const ema200 = parEMA(closes, 200);
         const vwap = parVWAP(candles);
-        const lastVol = candles[candles.length - 1].vol;
-        const avgVol = candles.slice(-20).reduce((a, b) => a + b.vol, 0) / 20;
-        const volRatio = lastVol / avgVol;
+        const volRatio = candles[candles.length-1].vol / (candles.slice(-20).reduce((a,b)=>a+b.vol,0)/20);
         const oiGrowing = parseFloat(oi.result?.list[0]?.openInterest) > parseFloat(oi.result?.list[1]?.openInterest);
 
+        // Score Master
         let longScore = (ema200 && price > ema200 && vwap && price > vwap) ? 50 : 0;
         if (oiGrowing) longScore += 30;
         if (volRatio > 1.1) longScore += 20;
@@ -153,7 +149,7 @@ async function serverCycle() {
                 await closeOrder(MONITOR.symbol, pos.side, pos.qty);
                 MONITOR.position = null;
                 serverLog("🔴 Stop Loss Atingido", "err");
-            }
+            } 
             // 2. Virada Sniper (Flip)
             else if (roi < 0 && (isLong ? shortTrigger : longTrigger)) {
                 await closeOrder(MONITOR.symbol, pos.side, pos.qty);
@@ -163,36 +159,40 @@ async function serverCycle() {
                     serverLog("🔄 Virada de Mão (Flip)", "warn");
                 }
             }
-            // 3. Trailing Check (Simplificado)
+            // 3. Atualiza Pico para Trailing
             else {
                 if (isLong && price > pos.peak) pos.peak = price;
                 if (!isLong && (price < pos.peak || pos.peak === 0)) pos.peak = price;
             }
         } 
-        // Entrada Nova
-        else if (longTrigger || shortTrigger) {
-            if (longTrigger && shortTrigger) return; // Conflito
-
+        // 4. Nova Entrada
+        else if ((longTrigger || shortTrigger) && !(longTrigger && shortTrigger)) {
             const side = longTrigger ? 'LONG' : 'SHORT';
-            // Cálculo de Qty para ~$6.00 USD (Mínimo Bybit)
             const tradeQty = (6.5 / price).toFixed(MONITOR.symbol.includes('BTC') ? 3 : MONITOR.symbol.includes('ETH') ? 2 : 1);
             
             const res = await openOrder(side, MONITOR.symbol, MONITOR.config.lev, tradeQty);
             if (res.retCode === 0) {
-                MONITOR.position = { side, entry: price, qty: tradeQty, peak: price, trailActive: false, partialEntryCount: 0 };
+                MONITOR.position = { side, entry: price, qty: tradeQty, peak: price, trailActive: false };
                 serverLog(`🔥 Entrada Sniper: ${side} em ${price}`, 'ok');
             }
         }
-    } catch (e) {
-        console.error("Erro no ciclo:", e.message);
-    }
+    } catch (e) { console.error("Erro ciclo:", e.message); }
 }
 
-// --- ROTAS DO SERVIDOR ---
+// --- ROTAS DE SINCRONIA ---
 app.get('/status', (req, res) => res.json(MONITOR));
 
-app.post('/sync-par', (req, res) => {
+app.post('/sync-par', async (req, res) => {
     const { symbol, active, config } = req.body;
+
+    // Se o usuário clicar em PARAR no App
+    if (!active && MONITOR.active && MONITOR.position) {
+        serverLog(`🛑 Fechamento solicitado via App...`, 'warn');
+        try {
+            await closeOrder(MONITOR.symbol, MONITOR.position.side, MONITOR.position.qty);
+        } catch (e) {}
+    }
+
     MONITOR.active = active;
     if (active) {
         MONITOR.symbol = symbol;
@@ -200,7 +200,7 @@ app.post('/sync-par', (req, res) => {
         serverLog(`Sniper Cloud: Ativado para ${symbol}`, 'info');
     } else {
         MONITOR.position = null;
-        serverLog(`Sniper Cloud: Desativado`, 'warn');
+        serverLog(`Sniper Cloud: Desligado`, 'warn');
     }
     res.json({ success: true });
 });
