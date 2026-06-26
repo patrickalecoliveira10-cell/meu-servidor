@@ -14,26 +14,27 @@ const BYBIT_KEY = process.env.BYBIT_API_KEY;
 const BYBIT_SECRET = process.env.BYBIT_API_SECRET;
 const IS_TESTNET = process.env.USE_TESTNET === 'true';
 
-console.log("🚀 Sistema Iniciado. Chave API presente:", !!BYBIT_KEY);
+console.log("🚀 Sniper Cloud Iniciado. Chave API presente:", !!BYBIT_KEY);
 
 // ESTADO GLOBAL DO SERVIDOR
 let MONITOR = {
     active: false,
     symbol: null,
     config: { stopPct: 2.5, trailAct: 2, trailPull: 1, lev: 5 },
-    position: null,
+    position: null, // { side, entry, qty, peak, trailActive, partialEntryCount, partialExitDone }
     logs: []
 };
 
+// Funções de Log para o App ler
 function serverLog(msg, type = 'info') {
     const time = new Date().toLocaleTimeString();
     const entry = { time, msg, type };
     MONITOR.logs.unshift(entry);
-    if (MONITOR.logs.length > 20) MONITOR.logs.pop();
+    if (MONITOR.logs.length > 25) MONITOR.logs.pop();
     console.log(`[${type.toUpperCase()}] ${msg}`);
 }
 
-// --- HELPERS DE INDICADORES ---
+// --- INDICADORES TÉCNICOS ---
 function parEMA(values, period) {
     if (values.length < period) return null;
     const k = 2 / (period + 1);
@@ -50,22 +51,6 @@ function parVWAP(candles) {
         sumVol += c.vol;
     });
     return sumVol > 0 ? sumTPV / sumVol : null;
-}
-
-function parRSI(closes, period = 14) {
-    if (closes.length < period + 1) return 50;
-    let gains = 0, losses = 0;
-    for (let i = 1; i <= period; i++) {
-        const d = closes[i] - closes[i - 1];
-        if (d > 0) gains += d; else losses -= d;
-    }
-    let avgG = gains / period, avgL = losses / period;
-    for (let j = period + 1; j < closes.length; j++) {
-        const dj = closes[j] - closes[j - 1];
-        avgG = (avgG * (period - 1) + (dj > 0 ? dj : 0)) / period;
-        avgL = (avgL * (period - 1) + (dj < 0 ? -dj : 0)) / period;
-    }
-    return avgL === 0 ? 100 : 100 - (100 / (1 + avgG / avgL));
 }
 
 // --- COMUNICAÇÃO BYBIT V5 ---
@@ -93,7 +78,6 @@ async function bybitRequest(method, endpoint, data = {}) {
             data: method !== 'GET' ? data : undefined,
             timeout: 5000
         });
-        if (res.data.retCode !== 0) serverLog(`Bybit Erro: ${res.data.retMsg}`, 'err');
         return res.data;
     } catch (e) { 
         serverLog(`Falha API: ${e.message}`, 'err');
@@ -105,10 +89,14 @@ async function bybitRequest(method, endpoint, data = {}) {
 async function openOrder(side, symbol, lev, qty) {
     serverLog(`[EXEC] Abrindo ${side} em ${symbol} (Qty: ${qty})`, 'warn');
     await bybitRequest('POST', '/v5/position/set-leverage', { category: 'linear', symbol, buyLeverage: lev.toString(), sellLeverage: lev.toString() });
-    return await bybitRequest('POST', '/v5/order/create', {
+    
+    const resp = await bybitRequest('POST', '/v5/order/create', {
         category: 'linear', symbol, side: side === 'LONG' ? 'Buy' : 'Sell',
         orderType: 'Market', qty: qty.toString(), timeInForce: 'GTC'
     });
+    
+    if (resp.retCode !== 0) serverLog(`Erro Ordem: ${resp.retMsg}`, 'err');
+    return resp;
 }
 
 async function closeOrder(symbol, side, qty) {
@@ -119,7 +107,7 @@ async function closeOrder(symbol, side, qty) {
     });
 }
 
-// --- LOOP DE MONITORAMENTO ---
+// --- CICLO AUTÔNOMO DE MONITORAMENTO ---
 async function serverCycle() {
     if (!MONITOR.active || !MONITOR.symbol) return;
 
@@ -127,7 +115,7 @@ async function serverCycle() {
         const [kline, tickers, oi] = await Promise.all([
             bybitRequest('GET', '/v5/market/kline', { category: 'linear', symbol: MONITOR.symbol, interval: '1', limit: '210' }),
             bybitRequest('GET', '/v5/market/tickers', { category: 'linear', symbol: MONITOR.symbol }),
-            bybitRequest('GET', '/v5/market/open-interest', { category: 'linear', symbol: MONITOR.symbol, interval: '5min', limit: '2' })
+            bybitRequest('GET', '/v5/market/open-interest', { category: 'linear', symbol: MONITOR.symbol, intervalTime: '5min', limit: '2' })
         ]);
 
         if (!kline.result || !tickers.result) return;
@@ -136,16 +124,19 @@ async function serverCycle() {
         const price = parseFloat(tickers.result.list[0].lastPrice);
         const closes = candles.map(c => c.close);
 
+        // Indicadores Sniper
         const ema200 = parEMA(closes, 200);
         const vwap = parVWAP(candles);
-        const volRatio = candles[candles.length-1].vol / (candles.slice(-20).reduce((a,b)=>a+b.vol,0)/20);
+        const lastVol = candles[candles.length - 1].vol;
+        const avgVol = candles.slice(-20).reduce((a, b) => a + b.vol, 0) / 20;
+        const volRatio = lastVol / avgVol;
         const oiGrowing = parseFloat(oi.result?.list[0]?.openInterest) > parseFloat(oi.result?.list[1]?.openInterest);
 
-        let longScore = (price > ema200 && price > vwap) ? 50 : 0;
+        let longScore = (ema200 && price > ema200 && vwap && price > vwap) ? 50 : 0;
         if (oiGrowing) longScore += 30;
         if (volRatio > 1.1) longScore += 20;
 
-        let shortScore = (price < ema200 && price < vwap) ? 50 : 0;
+        let shortScore = (ema200 && price < ema200 && vwap && price < vwap) ? 50 : 0;
         if (oiGrowing) shortScore += 30;
         if (volRatio > 1.1) shortScore += 20;
 
@@ -153,44 +144,67 @@ async function serverCycle() {
         const shortTrigger = shortScore >= 70 && volRatio >= 1.1;
 
         if (MONITOR.position) {
-            // Gerenciamento (Flip, Stop, Trailing) - Implementado conforme lógica Sniper
             const pos = MONITOR.position;
             const isLong = pos.side === 'LONG';
-            const roi = (isLong ? (price-pos.entry)/pos.entry : (pos.entry-price)/pos.entry) * 100 * MONITOR.config.lev;
+            const roi = (isLong ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * MONITOR.config.lev;
 
+            // 1. Stop Loss
             if (roi <= -MONITOR.config.stopPct) {
                 await closeOrder(MONITOR.symbol, pos.side, pos.qty);
                 MONITOR.position = null;
-                serverLog("Stop Loss atingido", "err");
-            } else if (roi < 0 && (isLong ? shortTrigger : longTrigger)) {
+                serverLog("🔴 Stop Loss Atingido", "err");
+            }
+            // 2. Virada Sniper (Flip)
+            else if (roi < 0 && (isLong ? shortTrigger : longTrigger)) {
                 await closeOrder(MONITOR.symbol, pos.side, pos.qty);
                 const res = await openOrder(isLong ? 'SHORT' : 'LONG', MONITOR.symbol, MONITOR.config.lev, pos.qty);
-                if(res.retCode === 0) MONITOR.position = { ...pos, side: isLong ? 'SHORT' : 'LONG', entry: price };
-                serverLog("🔄 Virada de Mão (Flip)", "warn");
+                if (res.retCode === 0) {
+                    MONITOR.position = { ...pos, side: isLong ? 'SHORT' : 'LONG', entry: price, peak: price };
+                    serverLog("🔄 Virada de Mão (Flip)", "warn");
+                }
             }
-        } else {
-            // Entrada Autônoma (Qty ajustada para mínimo de ~$6 USD)
-            const tradeQty = (6 / price).toFixed(MONITOR.symbol.includes('BTC') ? 3 : 1);
-            if (longTrigger && !shortTrigger) {
-                const res = await openOrder('LONG', MONITOR.symbol, MONITOR.config.lev, tradeQty);
-                if(res.retCode===0) MONITOR.position = { side: 'LONG', entry: price, qty: tradeQty, peak: price, trailActive: false };
-            } else if (shortTrigger && !longTrigger) {
-                const res = await openOrder('SHORT', MONITOR.symbol, MONITOR.config.lev, tradeQty);
-                if(res.retCode===0) MONITOR.position = { side: 'SHORT', entry: price, qty: tradeQty, peak: price, trailActive: false };
+            // 3. Trailing Check (Simplificado)
+            else {
+                if (isLong && price > pos.peak) pos.peak = price;
+                if (!isLong && (price < pos.peak || pos.peak === 0)) pos.peak = price;
+            }
+        } 
+        // Entrada Nova
+        else if (longTrigger || shortTrigger) {
+            if (longTrigger && shortTrigger) return; // Conflito
+
+            const side = longTrigger ? 'LONG' : 'SHORT';
+            // Cálculo de Qty para ~$6.00 USD (Mínimo Bybit)
+            const tradeQty = (6.5 / price).toFixed(MONITOR.symbol.includes('BTC') ? 3 : MONITOR.symbol.includes('ETH') ? 2 : 1);
+            
+            const res = await openOrder(side, MONITOR.symbol, MONITOR.config.lev, tradeQty);
+            if (res.retCode === 0) {
+                MONITOR.position = { side, entry: price, qty: tradeQty, peak: price, trailActive: false, partialEntryCount: 0 };
+                serverLog(`🔥 Entrada Sniper: ${side} em ${price}`, 'ok');
             }
         }
-    } catch (e) { console.error("Erro ciclo:", e.message); }
+    } catch (e) {
+        console.error("Erro no ciclo:", e.message);
+    }
 }
 
-setInterval(serverCycle, 8000);
-
-// --- ROTAS API ---
+// --- ROTAS DO SERVIDOR ---
 app.get('/status', (req, res) => res.json(MONITOR));
+
 app.post('/sync-par', (req, res) => {
     const { symbol, active, config } = req.body;
     MONITOR.active = active;
-    if (active) { MONITOR.symbol = symbol; MONITOR.config = config; serverLog(`Monitorando ${symbol}`, 'info'); }
+    if (active) {
+        MONITOR.symbol = symbol;
+        MONITOR.config = config;
+        serverLog(`Sniper Cloud: Ativado para ${symbol}`, 'info');
+    } else {
+        MONITOR.position = null;
+        serverLog(`Sniper Cloud: Desativado`, 'warn');
+    }
     res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`Servidor Ativo na Porta ${PORT}`));
+setInterval(serverCycle, 8000);
+
+app.listen(PORT, () => console.log(`Servidor Sniper Ativo na Porta ${PORT}`));
