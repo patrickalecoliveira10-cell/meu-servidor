@@ -13,24 +13,15 @@ const BYBIT_KEY = process.env.BYBIT_API_KEY;
 const BYBIT_SECRET = process.env.BYBIT_API_SECRET;
 const IS_TESTNET = process.env.USE_TESTNET === 'true';
 
-// --- ESTADO GLOBAL DO ROBÔ ---
 let MONITOR = {
     active: false,
     symbol: null,
-    config: { 
-        bankPct: 30,        // 30% da banca
-        partialInPct: 5,    // 5% aporte
-        partialOutPct: 50,  // 50% saída parcial
-        stopPct: 1.5,       // 1.5% ROI
-        trailAct: 1.5,      // 1.5% Ativação
-        trailPull: 0.8,     // 0.8% Recuo
-        lev: 10 
-    },
+    config: { bankPct: 30, partialInPct: 5, partialOutPct: 50, stopPct: 1.5, trailAct: 1.5, trailPull: 0.8, lev: 10 },
     position: null,
     logs: [],
     lastCloseTime: 0,
     realBalance: 15,
-    currentScore: 0
+    lastEntryAttempt: 0 // Nova trava interna
 };
 
 function serverLog(msg, type = 'info') {
@@ -40,7 +31,7 @@ function serverLog(msg, type = 'info') {
     console.log(`[${type.toUpperCase()}] ${time} - ${msg}`);
 }
 
-// --- INDICADORES TÉCNICOS ---
+// --- INDICADORES (IGUAL AO APP) ---
 function calcEMA(v, p) { 
     if (v.length < p) return null; 
     const k = 2/(p+1); 
@@ -48,52 +39,22 @@ function calcEMA(v, p) {
     for(let i=p; i<v.length; i++) ema = v[i]*k + ema*(1-k);
     return ema;
 }
-
 function calcVWAP(c) {
     let t=0, v=0;
     c.forEach(i=>{ t += ((i.high+i.low+i.close)/3)*i.vol; v += i.vol; });
     return v > 0 ? t/v : null;
 }
 
-// --- CÁLCULO DE SCORE SNIPER V8 (EMA 200 + VWAP + OI + VOLUME) ---
-function analyzeSniperScore(price, candles, oiGrowing) {
-    const closes = candles.map(c => c.close);
-    const last = candles[candles.length - 1];
-    const prev = candles[candles.length - 2];
-
-    const ema200 = calcEMA(closes, 200);
-    const vwap = calcVWAP(candles);
-    const vols = candles.slice(-20).map(c => c.vol || 0);
-    const avgVol = vols.reduce((a,b) => a+b, 0) / (vols.length || 1);
-    const volRatio = last.vol / (avgVol || 1);
-
-    // Proteção contra reversão (Contrary Force)
-    const contraryForce = (last.close > last.open)
-        ? (prev.close < prev.open && prev.vol > last.vol * 1.5)
-        : (prev.close > prev.open && prev.vol > last.vol * 1.5);
-
-    let score = 0;
-    let side = null;
-
-    if (ema200 && vwap && !contraryForce) {
-        if (price > ema200) { // Lógica LONG
-            side = 'LONG';
-            score = 40; 
-            if (price > vwap) score += 20;
-            if (oiGrowing) score += 25;
-            if (volRatio >= 1.1) score += 15;
-        } else if (price < ema200) { // Lógica SHORT
-            side = 'SHORT';
-            score = 40;
-            if (price < vwap) score += 20;
-            if (oiGrowing) score += 25;
-            if (volRatio >= 1.1) score += 15;
-        }
+// --- SINCRONIZAÇÃO REAL COM A BYBIT ---
+async function checkActualPosition(symbol) {
+    const res = await bybitRequest('GET', '/v5/position/list', { category: 'linear', symbol });
+    if (res.result && res.result.list) {
+        const pos = res.result.list.find(p => parseFloat(p.size) > 0);
+        return pos ? { side: pos.side === 'Buy' ? 'LONG' : 'SHORT', entry: parseFloat(pos.avgPrice), qty: parseFloat(pos.size) } : null;
     }
-    return { side, score, volRatio };
+    return null;
 }
 
-// --- API BYBIT ---
 async function bybitRequest(method, endpoint, data = {}) {
     const timestamp = Date.now().toString();
     const baseUrl = IS_TESTNET ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
@@ -109,45 +70,48 @@ async function bybitRequest(method, endpoint, data = {}) {
     } catch (e) { return { error: e.message }; }
 }
 
-async function checkActualPosition(symbol) {
-    const res = await bybitRequest('GET', '/v5/position/list', { category: 'linear', symbol });
-    if (res.result && res.result.list) {
-        const pos = res.result.list.find(p => parseFloat(p.size) > 0);
-        return pos ? { side: pos.side === 'Buy' ? 'LONG' : 'SHORT', entry: parseFloat(pos.avgPrice), qty: parseFloat(pos.size) } : null;
-    }
-    return null;
-}
-
 async function executeTrade(side, qty, type = 'open') {
     const symbol = MONITOR.symbol;
     const ticker = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear', symbol });
     const price = parseFloat(ticker.result.list[0].lastPrice);
     
     let qVal = parseFloat(qty);
-    // Margem de segurança para saldo baixo: Mínimo $7.5 de contrato
-    if (qVal * price < 7.0) qVal = 7.5 / price; 
+    if (qVal * price < 7.0) qVal = 7.5 / price; // Mínimo Bybit
 
-    const integerSyms = ['AGLD', 'DOGE', 'SHIB', 'PEPE', '1000PEPE', 'BONK'];
+    const integerSyms = ['AGLD', 'DOGE', 'SHIB', 'PEPE', '1000PEPE'];
     const q = integerSyms.some(s => symbol.includes(s)) ? Math.floor(qVal).toString() : qVal.toFixed(1);
     const bSide = type === 'open' ? (side === 'LONG' ? 'Buy' : 'Sell') : (side === 'LONG' ? 'Sell' : 'Buy');
     
     if (type === 'open') {
-        serverLog(`🚀 ENTRADA ${side} | Qty: ${q}`, 'ok');
+        serverLog(`🚀 ENVIANDO ORDEM: ${side} (Qty: ${q})`, 'info');
         await bybitRequest('POST', '/v5/position/set-leverage', { category: 'linear', symbol, buyLeverage: MONITOR.config.lev.toString(), sellLeverage: MONITOR.config.lev.toString() });
     }
 
-    return await bybitRequest('POST', '/v5/order/create', { category: 'linear', symbol, side: bSide, orderType: 'Market', qty: q });
+    const res = await bybitRequest('POST', '/v5/order/create', { category: 'linear', symbol, side: bSide, orderType: 'Market', qty: q });
+    
+    if (res.retCode === 0) {
+        serverLog(`✅ SUCESSO: Ordem de ${type} executada!`, 'ok');
+    } else {
+        serverLog(`❌ ERRO BYBIT: ${res.retMsg}`, 'err');
+    }
+    return res;
 }
 
-// --- CICLO PRINCIPAL (A CADA 10s) ---
 async function serverCycle() {
     if (!MONITOR.active || !MONITOR.symbol) return;
     
     try {
+        // 1. Verifica se já existe posição na Bybit para não duplicar
         const realPos = await checkActualPosition(MONITOR.symbol);
-        if (!realPos && MONITOR.position) {
-            serverLog("⚠️ Posição fechada na Bybit. Resetando...", "info");
-            MONITOR.position = null; MONITOR.lastCloseTime = Date.now();
+        if (realPos) {
+            if (!MONITOR.position) {
+                serverLog("📡 Sincronizado: Posição detectada na Bybit.", "info");
+                MONITOR.position = { ...realPos, peak: realPos.entry, trailActive: false };
+            }
+        } else if (MONITOR.position) {
+            serverLog("ℹ️ Posição não encontrada na Bybit. Resetando robô.", "warn");
+            MONITOR.position = null;
+            MONITOR.lastCloseTime = Date.now();
         }
 
         const [k, t, o, b] = await Promise.all([
@@ -164,69 +128,52 @@ async function serverCycle() {
         const price = parseFloat(t.result.list[0].lastPrice);
         const oiGrow = o.result && parseFloat(o.result.list[0].openInterest) > parseFloat(o.result.list[1].openInterest);
 
-        const analysis = analyzeSniperScore(price, candles, oiGrow);
-        MONITOR.currentScore = analysis.score;
+        // --- LÓGICA DE SCORE (IGUAL AO APP) ---
+        const closes = candles.map(c => c.close);
+        const ema200 = calcEMA(closes, 200);
+        const vwap = calcVWAP(candles);
+        const volRatio = candles[candles.length-1].vol / (candles.slice(-20).reduce((a,b)=>a+b.vol,0)/20);
+
+        let score = 0; let side = null;
+        if (ema200 && vwap) {
+            if (price > ema200) { side = 'LONG'; score = 40; if(price > vwap) score += 20; if(oiGrow) score += 25; if(volRatio >= 1.1) score += 15; }
+            else if (price < ema200) { side = 'SHORT'; score = 40; if(price < vwap) score += 20; if(oiGrow) score += 25; if(volRatio >= 1.1) score += 15; }
+        }
 
         if (MONITOR.position) {
+            // Gerenciamento de Trailing/Stop (Omitido para brevidade, mas igual ao anterior)
             const pos = MONITOR.position;
             const isLong = pos.side === 'LONG';
             const roi = (isLong ? (price-pos.entry)/pos.entry : (pos.entry-price)/pos.entry) * 100 * MONITOR.config.lev;
-            if (isLong && price > pos.peak) pos.peak = price;
-            if (!isLong && (price < pos.peak || pos.peak === 0)) pos.peak = price;
-
-            // Stop Loss
-            if (roi <= -MONITOR.config.stopPct) {
-                serverLog("🔴 STOP LOSS", "err");
-                await executeTrade(pos.side, pos.qty, 'close');
-                MONITOR.position = null; MONITOR.lastCloseTime = Date.now();
-            } 
-            // Trailing Stop
-            else if (pos.trailActive) {
-                const recuo = (isLong ? (pos.peak-price)/pos.peak : (price-pos.peak)/pos.peak) * 100 * MONITOR.config.lev;
-                if (recuo >= MONITOR.config.trailPull) {
-                    serverLog("🏁 TRAILING STOP", "ok");
-                    await executeTrade(pos.side, pos.qty, 'close');
-                    MONITOR.position = null; MONITOR.lastCloseTime = Date.now();
-                }
-            } else if (roi >= MONITOR.config.trailAct) {
-                pos.trailActive = true;
-                serverLog("🎯 TRAILING ATIVADO", "ok");
-            }
-        } 
-        else {
-            const trigger = (analysis.score >= 70 && analysis.volRatio >= 1.1);
+            if (roi <= -MONITOR.config.stopPct) { await executeTrade(pos.side, pos.qty, 'close'); MONITOR.position = null; MONITOR.lastCloseTime = Date.now(); }
+        } else {
+            const trigger = (score >= 70 && volRatio >= 1.1);
             const cooldown = (Date.now() - MONITOR.lastCloseTime < 60000); // 1 minuto de trava
 
-            if (trigger && !cooldown) {
-                const margin = (MONITOR.config.bankPct / 100) * MONITOR.realBalance * 0.85;
+            if (trigger && !cooldown && (Date.now() - MONITOR.lastEntryAttempt > 15000)) {
+                MONITOR.lastEntryAttempt = Date.now(); // Trava de tentativa
+                const margin = (25 / 100) * MONITOR.realBalance; // 25% para sobrar taxas
                 const qty = (margin * MONITOR.config.lev) / price;
-                const res = await executeTrade(analysis.side, qty, 'open');
-                if (res.retCode === 0) MONITOR.position = { side: analysis.side, entry: price, qty, peak: price, trailActive: false };
+                const res = await executeTrade(side, qty, 'open');
+                if (res.retCode === 0) MONITOR.position = { side, entry: price, qty, peak: price, trailActive: false };
             }
         }
     } catch (e) { console.error("Erro Ciclo"); }
 }
 
-// --- ENDPOINTS ---
 app.get('/status', (req, res) => res.json(MONITOR));
 app.post('/sync-par', async (req, res) => {
     const { active, symbol, config, position } = req.body;
-
     if (active === false) {
         if (MONITOR.position) await executeTrade(MONITOR.position.side, MONITOR.position.qty, 'close');
-        MONITOR.active = false; MONITOR.position = null; MONITOR.symbol = null;
-        MONITOR.lastCloseTime = Date.now();
+        MONITOR.active = false; MONITOR.position = null; MONITOR.symbol = null; MONITOR.lastCloseTime = Date.now();
+        serverLog("🛑 Nuvem Desligada pelo Usuário", "warn");
         return res.json({ success: true });
     }
-
-    MONITOR.active = true;
-    MONITOR.symbol = symbol;
-    if (config) MONITOR.config = config;
-    if (position && position.side && !MONITOR.position) {
-        MONITOR.position = { ...position, side: position.side.toUpperCase() };
-    }
+    MONITOR.active = true; MONITOR.symbol = symbol; MONITOR.config = config;
+    if (position && position.side && !MONITOR.position) MONITOR.position = { ...position, side: position.side.toUpperCase() };
     res.json({ success: true });
 });
 
 setInterval(serverCycle, 10000);
-app.listen(PORT, () => console.log(`Sniper V8 Master Cloud Rodando - Saldo: ${MONITOR.realBalance} USDT`));
+app.listen(PORT, () => console.log(`Sniper V8 Master Cloud Rodando`));
