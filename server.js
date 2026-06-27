@@ -31,23 +31,27 @@ function serverLog(msg, type = 'info') {
     console.log(`[${type.toUpperCase()}] ${time} - ${msg}`);
 }
 
-// --- ARREDONDAMENTO ULTRA-RIGOROSO ---
+// --- SISTEMA DE ARREDONDAMENTO INTELIGENTE ---
 function roundQty(symbol, qty) {
     const sym = symbol.toUpperCase();
-    // Moedas que só aceitam inteiros
-    const integerSyms = ['AGLD', 'DOGE', 'SHIB', 'PEPE', '1000PEPE', 'BONK', 'GALA', 'LUNC', 'FLOKI', 'XVG', 'XRP'];
+    
+    // Lista de moedas que SÓ aceitam números INTEIROS
+    const integerSyms = ['AGLD', 'DOGE', 'SHIB', 'PEPE', '1000PEPE', 'BONK', 'GALA', 'LUNC', 'FLOKI', 'XVG', 'XRP', 'ADA', 'TRX', 'MATIC', 'POL'];
     
     if (integerSyms.some(s => sym.includes(s))) {
-        return Math.floor(qty).toString();
+        return Math.max(1, Math.round(qty)).toString();
     }
     
-    // Moedas com precisão específica
+    // Precisão para moedas de alto valor
     if (sym.includes('BTC')) return qty.toFixed(3);
     if (sym.includes('ETH')) return qty.toFixed(2);
-    if (sym.includes('SOL') || sym.includes('LTC') || sym.includes('BNB')) return qty.toFixed(2);
+    if (sym.includes('SOL') || sym.includes('BNB') || sym.includes('LTC') || sym.includes('AVAX')) {
+        return Math.max(0.1, parseFloat(qty.toFixed(1))).toString();
+    }
     
-    // Padrão para a maioria das altcoins
-    return qty.toFixed(1);
+    // Padrão para a maioria das altcoins (1 decimal)
+    const finalQty = parseFloat(qty.toFixed(1));
+    return finalQty > 0 ? finalQty.toString() : "1";
 }
 
 async function bybitRequest(method, endpoint, data = {}) {
@@ -66,33 +70,37 @@ async function bybitRequest(method, endpoint, data = {}) {
 }
 
 async function checkActualPosition(symbol) {
-    const res = await bybitRequest('GET', '/v5/position/list', { category: 'linear', symbol });
-    if (res.result && res.result.list) {
-        const pos = res.result.list.find(p => parseFloat(p.size) > 0);
-        return pos ? { 
-            side: pos.side === 'Buy' ? 'LONG' : 'SHORT', 
-            entry: parseFloat(pos.avgPrice), 
-            qty: parseFloat(pos.size),
-            peak: parseFloat(pos.avgPrice)
-        } : null;
-    }
+    try {
+        const res = await bybitRequest('GET', '/v5/position/list', { category: 'linear', symbol });
+        if (res.result && res.result.list) {
+            const pos = res.result.list.find(p => parseFloat(p.size) > 0);
+            return pos ? { 
+                side: pos.side === 'Buy' ? 'LONG' : 'SHORT', 
+                entry: parseFloat(pos.avgPrice), 
+                qty: parseFloat(pos.size),
+                peak: parseFloat(pos.avgPrice)
+            } : null;
+        }
+    } catch (e) {}
     return null;
 }
 
 async function executeTrade(side, qty, type = 'open') {
     const symbol = MONITOR.symbol;
     const ticker = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear', symbol });
-    const price = parseFloat(ticker.result.list[0].lastPrice);
+    if (!ticker.result) return { retCode: -1, retMsg: "Ticker Fail" };
     
+    const price = parseFloat(ticker.result.list[0].lastPrice);
     let qVal = parseFloat(qty);
-    // Garantir valor mínimo de contrato ($7.00) para evitar erros de "qty too small"
-    if (qVal * price < 6.5) qVal = 7.0 / price;
+
+    // SEGURANÇA: Garante que a ordem tenha valor nominal suficiente para a Bybit aceitar ($7+)
+    if (qVal * price < 7.0) qVal = 7.5 / price;
 
     const q = roundQty(symbol, qVal);
     const bSide = type === 'open' ? (side === 'LONG' ? 'Buy' : 'Sell') : (side === 'LONG' ? 'Sell' : 'Buy');
     
     if (type === 'open') {
-        serverLog(`🚀 ENVIANDO ORDEM ${side} | Qty: ${q}`, 'info');
+        serverLog(`🚀 ENVIANDO ORDEM ${side} ${symbol} | Qty: ${q}`, 'info');
         await bybitRequest('POST', '/v5/position/set-leverage', { 
             category: 'linear', symbol, 
             buyLeverage: MONITOR.config.lev.toString(), 
@@ -107,7 +115,7 @@ async function executeTrade(side, qty, type = 'open') {
     if (res.retCode !== 0) {
         serverLog(`❌ BYBIT REJEITOU: ${res.retMsg}`, 'err');
     } else {
-        serverLog(`✅ ORDEM EXECUTADA: ${q} contratos`, 'ok');
+        serverLog(`✅ ORDEM EXECUTADA: ${q} ${symbol}`, 'ok');
     }
     return res;
 }
@@ -119,7 +127,7 @@ async function serverCycle() {
         if (realPos) {
             if (!MONITOR.position) {
                 MONITOR.position = realPos;
-                serverLog("📡 Posição detectada e sincronizada.", "ok");
+                serverLog(`📡 Sincronizado: Posição ${realPos.side} ativa.`, "ok");
             }
         } else if (MONITOR.position) {
             serverLog("ℹ️ Posição encerrada externamente.", "warn");
@@ -135,13 +143,12 @@ async function serverCycle() {
         ]);
 
         if (!k.result || !t.result) return;
-        if (b.result) MONITOR.realBalance = parseFloat(b.result.list[0].totalAvailableBalance || 15);
+        if (b.result && b.result.list) MONITOR.realBalance = parseFloat(b.result.list[0].totalAvailableBalance || 15);
 
         const candles = k.result.list.map(i=>({ high:parseFloat(i[2]), low:parseFloat(i[3]), close:parseFloat(i[4]), vol:parseFloat(i[5]), open:parseFloat(i[1]) })).reverse();
         const price = parseFloat(t.result.list[0].lastPrice);
         const oiGrow = o.result && parseFloat(o.result.list[0].openInterest) > parseFloat(o.result.list[1].openInterest);
 
-        // --- LÓGICA DE SCORE ---
         const closes = candles.map(c => c.close);
         const ema200 = calcEMA(closes, 200);
         const vwap = calcVWAP(candles);
@@ -182,7 +189,9 @@ async function serverCycle() {
                 const margin = (MONITOR.config.bankPct / 100) * MONITOR.realBalance * 0.9;
                 const qty = (margin * MONITOR.config.lev) / price;
                 const res = await executeTrade(side, qty, 'open');
-                if (res.retCode === 0) MONITOR.position = { side, entry: price, qty: parseFloat(roundQty(MONITOR.symbol, qty)), peak: price, trailActive: false };
+                if (res.retCode === 0) {
+                    MONITOR.position = { side, entry: price, qty: parseFloat(roundQty(MONITOR.symbol, qty)), peak: price, trailActive: false };
+                }
             }
         }
     } catch (e) { console.error("Erro Ciclo"); }
@@ -200,9 +209,11 @@ app.post('/sync-par', async (req, res) => {
         return res.json({ success: true });
     }
     MONITOR.active = true; MONITOR.symbol = symbol; MONITOR.config = config;
-    if (position && position.side && !MONITOR.position) MONITOR.position = { ...position, side: position.side.toUpperCase(), peak: position.entry, trailActive: false };
+    if (position && position.side && !MONITOR.position) {
+        MONITOR.position = { ...position, side: position.side.toUpperCase(), peak: position.entry, trailActive: false };
+    }
     res.json({ success: true });
 });
 
 setInterval(serverCycle, 10000);
-app.listen(PORT, () => console.log(`Sniper V8 Master Cloud`));
+app.listen(PORT, () => console.log(`Sniper V8 Cloud - Monitoring Ready`));
