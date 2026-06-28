@@ -10,18 +10,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// Estado Global do Monitor (Persistente no Render)
+// Estado Global do Monitor
 let MONITOR = {
     active: false,
     symbol: null,
-    config: { 
-        stopPct: 2.5, 
-        trailAct: 2.0, 
-        trailPull: 1.0, 
-        lev: 5, 
-        orderQty: 0.1 // Quantidade padrão inicial (será validada pela API)
-    }, 
-    position: null, // { side, entry, qty, peak, trailActive, partialCount, partialExitDone, lastAportePrice }
+    config: { stopPct: 2.5, trailAct: 2.0, trailPull: 1.0, lev: 5, orderQty: 10 }, 
+    position: null, 
     indicators: { scoreL: 0, scoreS: 0, volRatio: 0, price: 0 },
     logs: []
 };
@@ -35,7 +29,7 @@ function addLog(msg, type = 'info') {
     console.log(`[${type.toUpperCase()}] ${msg}`);
 }
 
-// Requisição Assinada V5 Bybit
+// Requisições Bybit V5
 async function bybitRequest(method, endpoint, data = {}) {
     const key = process.env.BYBIT_API_KEY;
     const secret = process.env.BYBIT_API_SECRET;
@@ -59,40 +53,33 @@ async function bybitRequest(method, endpoint, data = {}) {
             timeout: 8000
         });
         return res.data;
-    } catch (e) {
-        return { error: e.message };
-    }
+    } catch (e) { return { error: e.message }; }
 }
 
-// Função de Execução Real com Validação de Lote Mínimo
+// --- FUNÇÃO DE EXECUÇÃO ROBUSTA (BASEADA NA VERSÃO LUCRATIVA) ---
 async function placeOrder(side, qty, isReduce = false) {
     if (!MONITOR.symbol) return false;
     
     let finalQty = qty;
 
-    // Validação de Lote Mínimo e Step Size (Evita erro de contratos)
-    if (!isReduce) {
-        try {
-            const info = await bybitRequest('GET', '/v5/market/instruments-info', { category: 'linear', symbol: MONITOR.symbol });
-            if (info.result && info.result.list && info.result.list[0]) {
-                const limits = info.result.list[0].lotSizeFilter;
-                const minQty = parseFloat(limits.minOrderQty);
-                const step = parseFloat(limits.qtyStep);
-                
-                if (finalQty < minQty) finalQty = minQty;
-                
-                // Ajusta precisão decimal conforme a Bybit exige
-                const precision = Math.max(0, Math.round(-Math.log10(step)));
-                finalQty = parseFloat(finalQty.toFixed(precision));
-            }
-        } catch (e) {
-            console.error("Erro ao validar lotes:", e);
+    // Busca limites reais do instrumento para evitar erro de contrato
+    const info = await bybitRequest('GET', '/v5/market/instruments-info', { category: 'linear', symbol: MONITOR.symbol });
+    if (info.result && info.result.list && info.result.list[0]) {
+        const limits = info.result.list[0].lotSizeFilter;
+        const minQty = parseFloat(limits.minOrderQty);
+        const qtyStep = parseFloat(limits.qtyStep);
+        
+        // Regra 1: Respeitar o mínimo da Bybit
+        if (finalQty < minQty) {
+            finalQty = minQty;
         }
-    } else {
-        // Para fechamento, arredondamos levemente para evitar erros de precisão
-        finalQty = parseFloat(qty.toFixed(4));
+
+        // Regra 2: Arredondar para o Step Size correto (Essencial para não dar erro)
+        // Ex: Se o step é 0.01 e você envia 0.015, dá erro.
+        const precision = Math.max(0, Math.round(-Math.log10(qtyStep)));
+        finalQty = parseFloat(finalQty.toFixed(precision));
     }
-    
+
     const bybitSide = side.toLowerCase() === 'long' ? 'Buy' : 'Sell';
     const orderData = {
         category: "linear",
@@ -104,11 +91,11 @@ async function placeOrder(side, qty, isReduce = false) {
         reduceOnly: isReduce
     };
 
-    addLog(`📡 Enviando ${bybitSide} ${finalQty} em ${MONITOR.symbol}`, 'info');
+    addLog(`📡 Enviando ${bybitSide} ${finalQty} ${MONITOR.symbol}`, 'info');
     const res = await bybitRequest('POST', '/v5/order/create', orderData);
     
     if (res.retCode === 0) {
-        addLog(`✅ Sucesso na Bybit: ${res.result.orderId}`, 'ok');
+        addLog(`✅ Sucesso Bybit: ${res.result.orderId}`, 'ok');
         return true;
     } else {
         addLog(`❌ Erro Bybit: ${res.retMsg}`, 'err');
@@ -116,7 +103,7 @@ async function placeOrder(side, qty, isReduce = false) {
     }
 }
 
-// Motor de Scoring e Matemática
+// --- LÓGICA V9.5 (40/30/30) ---
 function calcEMA(prices, period) {
     const k = 2 / (period + 1);
     let ema = prices[0];
@@ -133,12 +120,10 @@ async function engineScoring() {
     const prices = list.map(k => parseFloat(k[4]));
     const curP = prices[prices.length - 1];
 
-    // 1. EMA 200 (40%)
     const ema200 = calcEMA(prices, 200);
     let sL = (curP > ema200) ? 40 : 0;
     let sS = (curP < ema200) ? 40 : 0;
 
-    // 2. VWAP Simples (30%)
     let vSum = 0, volSum = 0;
     list.slice(-50).forEach(k => {
         const p = (parseFloat(k[2]) + parseFloat(k[3]) + parseFloat(k[4])) / 3;
@@ -149,7 +134,6 @@ async function engineScoring() {
     sL += (curP > vwap) ? 30 : 0;
     sS += (curP < vwap) ? 30 : 0;
 
-    // 3. Open Interest Trend (30%)
     const oiRes = await bybitRequest('GET', '/v5/market/open-interest', { category: 'linear', symbol: MONITOR.symbol, intervalTime: '5min', limit: '2' });
     if (oiRes.result && oiRes.result.list.length >= 2) {
         const growing = parseFloat(oiRes.result.list[0].openInterest) > parseFloat(oiRes.result.list[1].openInterest);
@@ -166,7 +150,7 @@ async function engineScoring() {
     return MONITOR.indicators;
 }
 
-// Loop Principal V9.5
+// Loop Principal
 setInterval(async () => {
     if (!MONITOR.active || !MONITOR.symbol) return;
     const data = await engineScoring();
@@ -176,125 +160,85 @@ setInterval(async () => {
     const longTrig = scoreL >= 70 && volRatio >= 1.1;
     const shortTrig = scoreS >= 70 && volRatio >= 1.1;
 
-    // --- ENTRADA ---
     if (!MONITOR.position) {
-        if (longTrig && shortTrig) return; // Conflito
-        if (longTrig) {
+        if (longTrig && !shortTrig) {
             const ok = await placeOrder('long', MONITOR.config.orderQty);
             if (ok) MONITOR.position = { side: 'long', entry: price, qty: MONITOR.config.orderQty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
-        } else if (shortTrig) {
+        } else if (shortTrig && !longTrig) {
             const ok = await placeOrder('short', MONITOR.config.orderQty);
             if (ok) MONITOR.position = { side: 'short', entry: price, qty: MONITOR.config.orderQty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
         }
-        return;
-    }
+    } else {
+        const pos = MONITOR.position;
+        const isL = pos.side === 'long';
+        const roi = (isL ? (price - pos.entry)/pos.entry : (pos.entry - price)/pos.entry) * 100 * (MONITOR.config.lev || 5);
+        const contrary = isL ? shortTrig : longTrig;
+        const favor = isL ? longTrig : shortTrig;
 
-    const pos = MONITOR.position;
-    const isL = pos.side === 'long';
-    const roi = (isL ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * (MONITOR.config.lev || 5);
-    const contrary = isL ? shortTrig : longTrig;
-    const favor = isL ? longTrig : shortTrig;
-
-    // 1. STOP LOSS FÍSICO
-    if (roi <= -MONITOR.config.stopPct) {
-        addLog(`❌ STOP LOSS ATINGIDO: ${roi.toFixed(2)}%`, 'err');
-        await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-        MONITOR.position = null;
-        return;
-    }
-
-    // 2. VIRADA (FLIP) - PRIORIDADE
-    if (roi < 0 && contrary) {
-        addLog(`🔄 VIRADA (FLIP): Revertendo posição...`, 'warn');
-        await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-        const newSide = isL ? 'short' : 'long';
-        const ok = await placeOrder(newSide, MONITOR.config.orderQty);
-        if (ok) MONITOR.position = { side: newSide, entry: price, qty: MONITOR.config.orderQty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
-        return;
-    }
-
-    // 3. FECHAMENTO SEGURANÇA (Lucro + Contrário)
-    if (roi > 0 && !pos.trailActive && contrary) {
-        addLog(`💰 SEGURANÇA: Fechando lucro antes do trailing por sinal contrário.`, 'ok');
-        await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-        MONITOR.position = null;
-        return;
-    }
-
-    // 4. APORTES (SCALE-IN) - MÁX 2
-    if (roi > 0.5 && favor && pos.partialCount < 2) {
-        const dist = Math.abs(price - pos.lastAportePrice) / pos.lastAportePrice * 100;
-        if (dist >= 0.3) {
-            const aporteQty = MONITOR.config.orderQty * 0.5;
-            const ok = await placeOrder(pos.side, aporteQty);
-            if (ok) {
-                pos.partialCount++;
-                pos.qty += aporteQty;
-                pos.lastAportePrice = price;
-                addLog(`📥 APORTE #${pos.partialCount} EXECUTADO`, 'info');
-            }
+        // 1. VIRADA (FLIP)
+        if (roi < 0 && contrary) {
+            addLog(`🔄 FLIP: Invertendo para ${isL ? 'SHORT' : 'LONG'}`, 'warn');
+            await placeOrder(isL ? 'short' : 'long', pos.qty, true); // Fecha atual
+            const newSide = isL ? 'short' : 'long';
+            const ok = await placeOrder(newSide, MONITOR.config.orderQty); // Abre nova
+            if (ok) MONITOR.position = { side: newSide, entry: price, qty: MONITOR.config.orderQty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
+            return;
         }
-    }
 
-    // 5. GESTÃO DE TRAILING
-    if (!pos.trailActive && roi >= MONITOR.config.trailAct) {
-        pos.trailActive = true;
-        addLog(`🎯 TRAILING ATIVADO`, 'ok');
-    }
-
-    if (pos.trailActive) {
-        if (contrary) {
-            if (!pos.partialExitDone) {
-                const exitQty = pos.qty * 0.5;
-                const ok = await placeOrder(isL ? 'short' : 'long', exitQty, true);
-                if (ok) {
-                    pos.qty -= exitQty;
-                    pos.partialExitDone = true;
-                    addLog(`📤 TRAILING: Saída parcial 50%`, 'info');
-                }
-            } else {
-                addLog(`🏁 TRAILING: Fechamento final por sinal contrário`, 'ok');
-                await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-                MONITOR.position = null;
-                return;
-            }
-        }
-        
-        if (isL && price > pos.peak) pos.peak = price;
-        if (!isL && price < pos.peak) pos.peak = price;
-        const pb = isL ? (pos.peak - price) / pos.peak * 100 : (price - pos.peak) / pos.peak * 100;
-
-        if (pb * (MONITOR.config.lev || 5) >= MONITOR.config.trailPull) {
-            addLog(`🏁 TRAILING STOP BATIDO`, 'ok');
+        // 2. SEGURANÇA NO LUCRO
+        if (roi > 0 && !pos.trailActive && contrary) {
+            addLog(`💰 SEGURANÇA: Fechando lucro.`, 'ok');
             await placeOrder(isL ? 'short' : 'long', pos.qty, true);
             MONITOR.position = null;
+            return;
+        }
+
+        // 3. APORTES
+        if (roi > 0.5 && favor && pos.partialCount < 2) {
+            if (Math.abs(price - pos.lastAportePrice)/pos.lastAportePrice * 100 >= 0.3) {
+                const aporteQty = MONITOR.config.orderQty * 0.5;
+                if (await placeOrder(pos.side, aporteQty)) {
+                    pos.partialCount++; pos.qty += aporteQty; pos.lastAportePrice = price;
+                    addLog(`📥 APORTE #${pos.partialCount}`, 'info');
+                }
+            }
+        }
+
+        // 4. TRAILING
+        if (!pos.trailActive && roi >= MONITOR.config.trailAct) { pos.trailActive = true; addLog(`🎯 TRAILING ATIVADO`, 'ok'); }
+        if (pos.trailActive) {
+            if (contrary) {
+                if (!pos.partialExitDone) {
+                    const exitQty = pos.qty * 0.5;
+                    if (await placeOrder(isL ? 'short' : 'long', exitQty, true)) { pos.qty -= exitQty; pos.partialExitDone = true; addLog(`📤 PARCIAL 50%`, 'info'); }
+                } else {
+                    await placeOrder(isL ? 'short' : 'long', pos.qty, true); MONITOR.position = null; addLog(`🏁 FINALIZADO`, 'ok');
+                }
+            }
+            if (isL && price > pos.peak) pos.peak = price;
+            if (!isL && price < pos.peak) pos.peak = price;
+            const pb = isL ? (pos.peak - price)/pos.peak * 100 : (price - pos.peak)/pos.peak * 100;
+            if (pb * (MONITOR.config.lev || 5) >= MONITOR.config.trailPull) {
+                await placeOrder(isL ? 'short' : 'long', pos.qty, true); MONITOR.position = null; addLog(`🏁 TRAILING STOP`, 'ok');
+            }
         }
     }
 }, 5000);
 
-// Endpoints API
 app.get('/status', (req, res) => res.json(MONITOR));
 app.get('/heartbeat', (req, res) => res.send('OK'));
-
 app.post('/sync-par', (req, res) => {
     const { symbol, active, config, forceEntry } = req.body;
     if (active) {
-        MONITOR.active = true;
-        MONITOR.symbol = symbol || MONITOR.symbol;
-        if (config) {
-            MONITOR.config = { ...MONITOR.config, ...config };
-            // Garante que orderQty não seja zero
-            if (!MONITOR.config.orderQty) MONITOR.config.orderQty = 0.1;
-        }
+        MONITOR.active = true; MONITOR.symbol = symbol || MONITOR.symbol;
+        if (config) MONITOR.config = { ...MONITOR.config, ...config };
         if (forceEntry) {
             placeOrder(forceEntry.side, MONITOR.config.orderQty).then(ok => {
                 if(ok) MONITOR.position = { side: forceEntry.side.toLowerCase(), entry: MONITOR.indicators.price, qty: MONITOR.config.orderQty, peak: 0, trailActive: false, partialCount: 0, lastAportePrice: 0 };
             });
         }
-    } else {
-        MONITOR.active = false;
-    }
+    } else MONITOR.active = false;
     res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`Scanner Pro v9.5 REAL-TRADE Online na porta ${PORT}`));
+app.listen(PORT, () => console.log(`Scanner Pro v9.5 Online na porta ${PORT}`));
