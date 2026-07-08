@@ -142,8 +142,8 @@ async function placeOrder(side, qty, isReduce = false) {
         const step = parseFloat(limits.qtyStep);
         const precision = Math.max(0, Math.round(-Math.log10(step)));
 
+        const currentPrice = MONITOR.indicators.price || 0;
         if (!isReduce) {
-            const currentPrice = MONITOR.indicators.price || 0;
             if (currentPrice > 0) {
                 // Arredonda para CIMA ao step para garantir nocional >= 5.2 USDT APÓS o floor.
                 // Sem ceil aqui, Math.floor posterior pode derrubar o nocional abaixo de 5 USDT
