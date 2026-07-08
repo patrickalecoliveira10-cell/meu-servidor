@@ -1,155 +1,111 @@
-// ╔══════════════════════════════════════════════════════════════════════╗
-// ║         BYBIT SCANNER PRO — SERVER v2.0 (DINHEIRO REAL)             ║
-// ║  Deploy: Render.com  |  Porta: process.env.PORT || 10000            ║
-// ║                                                                       ║
-// ║  Variáveis de ambiente necessárias no Render:                        ║
-// ║    BYBIT_API_KEY    = sua chave da Bybit                             ║
-// ║    BYBIT_API_SECRET = seu secret da Bybit                            ║
-// ║    USE_TESTNET      = true  (remova ou coloque false para real)       ║
-// ╚══════════════════════════════════════════════════════════════════════╝
-
-'use strict';
-
 const express = require('express');
-const axios   = require('axios');
-const crypto  = require('crypto');
-const cors    = require('cors');
+const axios = require('axios');
+const crypto = require('crypto');
+const cors = require('cors');
 require('dotenv').config();
 
-const app  = express();
-const PORT = process.env.PORT || 10000;
-
+const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ─── Estado Global ─────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 10000;
 
-const MONITOR = {
-    active:       false,
-    symbol:       null,
-    engineRunning: false,
+let MONITOR = {
+    active: false,
+    symbol: null,
     config: {
-        stopPct:       1.5,
-        trailAct:      1.5,
-        trailPull:     0.5,
-        lev:           1,
-        orderQty:      0.1,
-        partialInPct:  5,
+        stopPct: 1.5,
+        trailAct: 1.5,
+        trailPull: 0.5,
+        lev: 1,
+        orderQty: 0.1,
+        partialInPct: 5,
         partialOutPct: 50,
+        // Configurações do gatilho de entrada
+        emaScore: 40,
+        vwapScore: 30,
+        oiScore: 20,
+        volRatio: 1.2,
+        scoreMin: 50,
+        volMin: 1.0
     },
     position: null,
     indicators: { scoreL: 0, scoreS: 0, volRatio: 0, price: 0 },
-    logs: [],
+    logs: []
 };
 
-// ─── Log ───────────────────────────────────────────────────────────────────
-
 function addLog(msg, type = 'info') {
-    const ts    = new Date().toLocaleTimeString('pt-BR');
-    const entry = { time: Date.now(), msg: `[${ts}] ${msg}`, type };
-    MONITOR.logs.unshift(entry);
-    if (MONITOR.logs.length > 100) MONITOR.logs.pop();
+    const ts = new Date().toLocaleTimeString('pt-BR');
+    const logEntry = { time: Date.now(), msg: `[${ts}] ${msg}`, type };
+    MONITOR.logs.unshift(logEntry);
+    if (MONITOR.logs.length > 50) MONITOR.logs.pop();
     console.log(`[${type.toUpperCase()}] ${msg}`);
 }
 
-// ─── Bybit API ─────────────────────────────────────────────────────────────
-
 async function bybitRequest(method, endpoint, data = {}) {
-    const key       = process.env.BYBIT_API_KEY    || '';
-    const secret    = process.env.BYBIT_API_SECRET || '';
+    const key = process.env.BYBIT_API_KEY;
+    const secret = process.env.BYBIT_API_SECRET;
     const timestamp = Date.now().toString();
-    const baseUrl   = process.env.USE_TESTNET === 'true'
-        ? 'https://api-testnet.bybit.com'
-        : 'https://api.bybit.com';
-
-    const parameters = method === 'GET'
-        ? new URLSearchParams(data).toString()
-        : JSON.stringify(data);
-
-    const sign = crypto
-        .createHmac('sha256', secret)
-        .update(timestamp + key + '5000' + parameters)
-        .digest('hex');
-
+    const baseUrl = process.env.USE_TESTNET === 'true' ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
+    let parameters = method === 'GET' ? new URLSearchParams(data).toString() : JSON.stringify(data);
+    const sign = crypto.createHmac('sha256', secret).update(timestamp + key + '5000' + parameters).digest('hex');
     try {
         const res = await axios({
             method,
-            url:     baseUrl + endpoint + (method === 'GET' ? '?' + parameters : ''),
-            headers: {
-                'X-BAPI-API-KEY':      key,
-                'X-BAPI-SIGN':         sign,
-                'X-BAPI-TIMESTAMP':    timestamp,
-                'X-BAPI-RECV-WINDOW':  '5000',
-                ...(method !== 'GET' && { 'Content-Type': 'application/json' }),
-            },
-            data:    method !== 'GET' ? parameters : undefined,
-            timeout: 8000,
+            url: baseUrl + endpoint + (method === 'GET' ? '?' + parameters : ''),
+            headers: { 'X-BAPI-API-KEY': key, 'X-BAPI-SIGN': sign, 'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': '5000' },
+            data: method !== 'GET' ? data : undefined,
+            timeout: 8000
         });
         return res.data;
-    } catch (e) {
-        const msg = e.message || String(e);
-        addLog(`⚠️ Erro HTTP Bybit (${endpoint}): ${msg}`, 'err');
-        return { error: msg };
-    }
+    } catch (e) { return { error: e.message }; }
 }
-
-// ─── Ordem ─────────────────────────────────────────────────────────────────
 
 async function placeOrder(side, qty, isReduce = false) {
-    if (!MONITOR.symbol) return null;
-
+    if (!MONITOR.symbol) {
+        addLog(`❌ placeOrder: MONITOR.symbol não definido`, 'err');
+        return null;
+    }
     let finalQty = qty;
-
     if (!isReduce) {
         try {
-            const info = await bybitRequest('GET', '/v5/market/instruments-info', {
-                category: 'linear',
-                symbol:   MONITOR.symbol,
-            });
-            const instr = info && info.result && info.result.list && info.result.list[0];
-            if (instr) {
-                const minQty = parseFloat(instr.lotSizeFilter.minOrderQty);
-                const step   = parseFloat(instr.lotSizeFilter.qtyStep);
-                const price  = MONITOR.indicators.price;
-
-                if (price > 0) {
-                    const qtyMinNotional = 5.2 / price;
-                    if (finalQty < qtyMinNotional) finalQty = qtyMinNotional;
+            const info = await bybitRequest('GET', '/v5/market/instruments-info', { category: 'linear', symbol: MONITOR.symbol });
+            if (info.result && info.result.list && info.result.list[0]) {
+                const instr = info.result.list[0];
+                const limits = instr.lotSizeFilter;
+                const minQty = parseFloat(limits.minOrderQty);
+                const step = parseFloat(limits.qtyStep);
+                const currentPrice = MONITOR.indicators.price || 0;
+                if (currentPrice > 0) {
+                    const minNotional = 5.2;
+                    const qtyForMinVal = minNotional / currentPrice;
+                    if (finalQty < qtyForMinVal) finalQty = qtyForMinVal;
                 }
-
                 if (finalQty < minQty) finalQty = minQty;
-
                 const precision = Math.max(0, Math.round(-Math.log10(step)));
                 finalQty = parseFloat(finalQty.toFixed(precision));
+            } else {
+                addLog(`⚠️ Não foi possível obter informações do instrumento ${MONITOR.symbol}`, 'warn');
             }
         } catch (e) {
-            addLog(`⚠️ Erro ao buscar limites do instrumento: ${e.message}`, 'warn');
+            addLog(`❌ Erro ao obter limites do instrumento: ${e.message}`, 'err');
         }
     }
-
-    const bybitSide = side === 'long' ? 'Buy' : 'Sell';
-    const orderData = {
-        category:   'linear',
-        symbol:     MONITOR.symbol,
-        side:       bybitSide,
-        orderType:  'Market',
-        qty:        finalQty.toString(),
-        timeInForce:'GTC',
-        reduceOnly:  isReduce,
-    };
-
-    addLog(`📡 Ordem: ${bybitSide} ${finalQty} ${MONITOR.symbol}${isReduce ? ' [REDUÇÃO]' : ''}`, 'info');
-
-    const res     = await bybitRequest('POST', '/v5/order/create', orderData);
-    const retCode = res && res.retCode;
-
-    if (retCode === 0) return finalQty;
-
-    addLog(`❌ Ordem REJEITADA (retCode ${retCode}): ${res.retMsg || JSON.stringify(res)}`, 'err');
+    const bybitSide = side.toLowerCase() === 'long' ? 'Buy' : 'Sell';
+    const orderData = { category: "linear", symbol: MONITOR.symbol, side: bybitSide, orderType: "Market", qty: finalQty.toString(), timeInForce: "GTC", reduceOnly: isReduce };
+    addLog(`📡 Enviando ordem: ${bybitSide} ${finalQty} ${MONITOR.symbol} (reduceOnly=${isReduce})`, 'info');
+    const res = await bybitRequest('POST', '/v5/order/create', orderData);
+    if (res.retCode === 0) {
+        addLog(`✅ Ordem aceita pela Bybit: ${res.result?.orderId || 'sem ID'}`, 'ok');
+        return finalQty;
+    }
+    addLog(`❌ Erro Bybit (retCode=${res.retCode}): ${res.retMsg}`, 'err');
+    if (res.retCode === 10001) addLog(`💡 Dica: Verifique se a API Key tem permissão de trading`, 'err');
+    if (res.retCode === 10004) addLog(`💡 Dica: IP não autorizado na API Key`, 'err');
+    if (res.retCode === 10016) addLog(`💡 Dica: Saldo insuficiente`, 'err');
+    if (res.retCode === 10018) addLog(`💡 Dica: Quantidade inválida ou abaixo do mínimo`, 'err');
     return null;
 }
-
-// ─── Indicadores ───────────────────────────────────────────────────────────
 
 function calcEMA(prices, period) {
     const k = 2 / (period + 1);
@@ -160,471 +116,241 @@ function calcEMA(prices, period) {
 
 async function engineScoring() {
     if (!MONITOR.symbol) return null;
-
-    const kRes = await bybitRequest('GET', '/v5/market/kline', {
-        category: 'linear',
-        symbol:   MONITOR.symbol,
-        interval: '1',
-        limit:    '201',
-    });
-
-    if (!kRes || !kRes.result || !kRes.result.list || !kRes.result.list.length) return null;
-
-    const list   = [...kRes.result.list].reverse();
+    const kRes = await bybitRequest('GET', '/v5/market/kline', { category: 'linear', symbol: MONITOR.symbol, interval: '1', limit: '201' });
+    if (!kRes.result || !kRes.result.list) return null;
+    const list = kRes.result.list.reverse();
     const prices = list.map(k => parseFloat(k[4]));
-    const curP   = prices[prices.length - 1];
-    const prevP  = prices[prices.length - 2];
-
-    if (!isFinite(curP) || !isFinite(prevP)) return null;
-
-    // ── Score EMA 200 (40 pts) ─────────────────────────────────────────────
+    const curP = prices[prices.length - 1];
     const ema200 = calcEMA(prices, 200);
-    let sL = curP > ema200 ? 40 : 0;
-    let sS = curP < ema200 ? 40 : 0;
-
-    // ── Score VWAP (30 pts) ────────────────────────────────────────────────
+    
+    // Usa configurações personalizadas do gatilho
+    const emaScore = MONITOR.config.emaScore || 40;
+    const vwapScore = MONITOR.config.vwapScore || 30;
+    const oiScore = MONITOR.config.oiScore || 20;
+    
+    let sL = (curP > ema200) ? emaScore : 0;
+    let sS = (curP < ema200) ? emaScore : 0;
     let vwapSum = 0, volSum = 0;
     list.slice(-50).forEach(k => {
         const p = (parseFloat(k[2]) + parseFloat(k[3]) + parseFloat(k[4])) / 3;
         const v = parseFloat(k[5]);
-        vwapSum += p * v;
-        volSum  += v;
+        vwapSum += p * v; volSum += v;
     });
     const vwap = volSum > 0 ? vwapSum / volSum : curP;
-    sL += curP > vwap ? 30 : 0;
-    sS += curP < vwap ? 30 : 0;
-
-    // ── Score Open Interest (30 pts) ───────────────────────────────────────
-    const oiRes = await bybitRequest('GET', '/v5/market/open-interest', {
-        category:     'linear',
-        symbol:       MONITOR.symbol,
-        intervalTime: '5min',
-        limit:        '2',
-    });
-    const oiList = oiRes && oiRes.result && oiRes.result.list;
-    if (oiList && oiList.length >= 2) {
-        const growing = parseFloat(oiList[0].openInterest) > parseFloat(oiList[1].openInterest);
+    sL += (curP > vwap) ? vwapScore : 0;
+    sS += (curP < vwap) ? vwapScore : 0;
+    const oiRes = await bybitRequest('GET', '/v5/market/open-interest', { category: 'linear', symbol: MONITOR.symbol, intervalTime: '5min', limit: '2' });
+    if (oiRes.result && oiRes.result.list.length >= 2) {
+        const growing = parseFloat(oiRes.result.list[0].openInterest) > parseFloat(oiRes.result.list[1].openInterest);
         if (growing) {
-            if (curP > prevP) sL += 30;
-            else if (curP < prevP) sS += 30;
+            if (curP > prices[prices.length - 2]) sL += oiScore;
+            else if (curP < prices[prices.length - 2]) sS += oiScore;
         }
     }
-
-    // ── Volume ratio ───────────────────────────────────────────────────────
-    const recent20 = list.slice(-21, -1);
-    const avgVol   = recent20.length
-        ? recent20.reduce((a, b) => a + parseFloat(b[5]), 0) / recent20.length
-        : 0;
-    const lastVol  = parseFloat(list[list.length - 1][5]);
-    const vRat     = avgVol > 0 ? lastVol / avgVol : 0;
-
+    const avgVol = list.slice(-20).reduce((a, b) => a + parseFloat(b[5]), 0) / 20;
+    const vRat = parseFloat(list[list.length - 1][5]) / avgVol;
     MONITOR.indicators = { scoreL: sL, scoreS: sS, volRatio: vRat, price: curP };
     return MONITOR.indicators;
 }
 
-// ─── Engine Principal ──────────────────────────────────────────────────────
-
-async function engineTick() {
+setInterval(async () => {
     if (!MONITOR.active || !MONITOR.symbol) return;
-
     const data = await engineScoring();
     if (!data) return;
-
     const { scoreL, scoreS, volRatio, price } = data;
 
-    // ★ GATILHO DE ENTRADA: score ≥ 70 E volume ≥ 2.0× a média
-    const longTrig  = scoreL >= 70 && volRatio >= 2.0;
-    const shortTrig = scoreS >= 70 && volRatio >= 2.0;
+    // Usa configurações personalizadas do gatilho
+    const scoreMin = MONITOR.config.scoreMin || 50;
+    const volMin = MONITOR.config.volMin || 1.0;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // 1. SEM POSIÇÃO → lógica de entrada
-    // ═══════════════════════════════════════════════════════════════════════
+    const longTrig = scoreL >= scoreMin && volRatio >= volMin;
+    const shortTrig = scoreS >= scoreMin && volRatio >= volMin;
+
+    // Log de debug para rastrear gatilhos
+    if (longTrig || shortTrig) {
+        addLog(`🎯 GATILHO ATIVADO: scoreL=${scoreL.toFixed(0)} scoreS=${scoreS.toFixed(0)} volRatio=${volRatio.toFixed(2)} scoreMin=${scoreMin} volMin=${volMin}`, 'info');
+    }
+
+    // Log periódico a cada 60 ciclos (5 minutos) para mostrar configurações atuais
+    if (!MONITOR.logCounter) MONITOR.logCounter = 0;
+    MONITOR.logCounter++;
+    if (MONITOR.logCounter % 60 === 0) {
+        addLog(`📊 STATUS MONITORAMENTO: scoreL=${scoreL.toFixed(0)}/${scoreMin} scoreS=${scoreS.toFixed(0)}/${scoreMin} volRatio=${volRatio.toFixed(2)}/${volMin} price=${price}`, 'info');
+    }
+
+    // --- ENTRADA ---
     if (!MONITOR.position) {
-
+        // Bloqueio de Conflito: Não entra se os dois gatilhos estiverem ativos
         if (longTrig && shortTrig) {
-            addLog('⚠️ Conflito Long+Short simultâneos. Aguardando...', 'warn');
+            addLog("⚖️ Conflito: LONG e SHORT ativos. Ignorando entrada.", 'warn');
             return;
         }
-
-        if (longTrig || shortTrig) {
-            const side = longTrig ? 'long' : 'short';
-            const qty  = await placeOrder(side, MONITOR.config.orderQty);
-
-            if (qty !== null) {
-                MONITOR.position = {
-                    side,
-                    entry:           price,
-                    qty,
-                    peak:            price,
-                    trailActive:     false,
-                    partialCount:    0,
-                    lastAportePrice: price,
-                    partialExitDone: false,
-                };
-                addLog(`✅ ENTRADA ${side.toUpperCase()} @ ${price} | Qty: ${qty} | Vol: ${volRatio.toFixed(2)}x`, 'ok');
+        if (longTrig) {
+            addLog(`🚀 GATILHO LONG: scoreL=${scoreL.toFixed(0)} >= ${scoreMin}, volRatio=${volRatio.toFixed(2)} >= ${volMin}. Enviando ordem...`, 'info');
+            const qty = await placeOrder('long', MONITOR.config.orderQty);
+            if (qty) {
+                MONITOR.position = { side: 'long', entry: price, qty: qty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
+                addLog(`✅ ENTRADA LONG EXECUTADA: qty=${qty} @ ${price}`, 'ok');
+            } else {
+                addLog(`❌ FALHA NA ENTRADA LONG: placeOrder retornou null. Verifique API Key/Secret e saldo.`, 'err');
+            }
+        } else if (shortTrig) {
+            addLog(`🚀 GATILHO SHORT: scoreS=${scoreS.toFixed(0)} >= ${scoreMin}, volRatio=${volRatio.toFixed(2)} >= ${volMin}. Enviando ordem...`, 'info');
+            const qty = await placeOrder('short', MONITOR.config.orderQty);
+            if (qty) {
+                MONITOR.position = { side: 'short', entry: price, qty: qty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
+                addLog(`✅ ENTRADA SHORT EXECUTADA: qty=${qty} @ ${price}`, 'ok');
+            } else {
+                addLog(`❌ FALHA NA ENTRADA SHORT: placeOrder retornou null. Verifique API Key/Secret e saldo.`, 'err');
             }
         }
         return;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // 2. COM POSIÇÃO → gestão
-    // ═══════════════════════════════════════════════════════════════════════
-    const pos  = MONITOR.position;
-    const isL  = pos.side === 'long';
-    const roi  = (isL
-        ? (price - pos.entry) / pos.entry
-        : (pos.entry - price) / pos.entry
-    ) * 100 * MONITOR.config.lev;
-
+    // --- GESTÃO DE POSIÇÃO ATIVA ---
+    const pos = MONITOR.position;
+    const isL = pos.side === 'long';
+    const roi = (isL ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * (MONITOR.config.lev || 1);
     const contraryTrig = isL ? shortTrig : longTrig;
-    const favorTrig    = isL ? longTrig  : shortTrig;
+    const favorTrig = isL ? longTrig : shortTrig;
 
-    // ── A. STOP LOSS ───────────────────────────────────────────────────────
+    // 1. STOP LOSS FÍSICO
     if (roi <= -MONITOR.config.stopPct) {
-        addLog(`🛑 STOP LOSS @ ROI ${roi.toFixed(2)}%`, 'err');
-        const q = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-        if (q !== null) {
-            MONITOR.position = null;
-        } else {
-            addLog('⚠️ Stop Loss: ordem rejeitada. Tentará no próximo tick.', 'err');
-        }
+        await placeOrder(isL ? 'short' : 'long', pos.qty, true);
+        MONITOR.position = null;
+        addLog(`❌ STOP LOSS BATIDO em ${roi.toFixed(2)}%`, 'err');
         return;
     }
 
-    // ── B. VIRADA (FLIP) ───────────────────────────────────────────────────
-    if (contraryTrig && roi < 0) {
-        addLog(`🔄 VIRADA: ROI ${roi.toFixed(2)}% | Fechando ${pos.side.toUpperCase()}...`, 'warn');
-
-        const closeQ = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-        if (closeQ === null) {
-            addLog('⚠️ FLIP: falha ao fechar posição. Aguardando próximo tick.', 'err');
+    // 2. VIRADA (FLIP) OU SEGURANÇA
+    if (contraryTrig) {
+        if (roi < 0) {
+            // VIRADA: Prejuízo + Sinal Contrário
+            addLog(`🔄 VIRADA (FLIP): ROI ${roi.toFixed(2)}%. Invertendo...`, 'warn');
+            await placeOrder(isL ? 'short' : 'long', pos.qty, true);
+            const newSide = isL ? 'short' : 'long';
+            const qty = await placeOrder(newSide, MONITOR.config.orderQty);
+            if (qty) MONITOR.position = { side: newSide, entry: price, qty: qty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price };
+            return;
+        } else if (!pos.trailActive) {
+            // SEGURANÇA: Lucro + Sinal Contrário (Antes do Trailing)
+            addLog(`💰 SEGURANÇA: Lucro de ${roi.toFixed(2)}%. Fechando por sinal contrário.`, 'ok');
+            await placeOrder(isL ? 'short' : 'long', pos.qty, true);
+            MONITOR.position = null;
             return;
         }
-        MONITOR.position = null;
-
-        const newSide = isL ? 'short' : 'long';
-        const newQty  = await placeOrder(newSide, MONITOR.config.orderQty);
-        if (newQty !== null) {
-            MONITOR.position = {
-                side:            newSide,
-                entry:           price,
-                qty:             newQty,
-                peak:            price,
-                trailActive:     false,
-                partialCount:    0,
-                lastAportePrice: price,
-                partialExitDone: false,
-            };
-            addLog(`✅ NOVA POSIÇÃO ${newSide.toUpperCase()} @ ${price}`, 'ok');
-        } else {
-            addLog('⚠️ FLIP: posição anterior fechada, mas falha ao abrir nova. Flat.', 'warn');
-        }
-        return;
     }
 
-    // ── C. SEGURANÇA NO LUCRO ──────────────────────────────────────────────
-    if (contraryTrig && roi >= 0 && !pos.trailActive) {
-        addLog(`💰 SEGURANÇA: ROI ${roi.toFixed(2)}% | Sinal contrário antes do trailing. Fechando...`, 'ok');
-        const q = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-        if (q !== null) {
-            MONITOR.position = null;
-        } else {
-            addLog('⚠️ Segurança: ordem rejeitada. Tentará no próximo tick.', 'err');
-        }
-        return;
-    }
-
-    // ── D. APORTES PARCIAIS (máximo 2) ─────────────────────────────────────
-    if (favorTrig && roi > 0 && pos.partialCount < 2) {
-        const distPct = Math.abs(price - pos.lastAportePrice) / pos.lastAportePrice * 100;
-        if (distPct >= 0.3) {
-            const aporteQty = MONITOR.config.orderQty * (MONITOR.config.partialInPct / 100);
-            const qty = await placeOrder(pos.side, aporteQty);
-            if (qty !== null) {
+    // 3. APORTES (SCALE-IN): Máximo 2
+    if (favorTrig && roi > 0.5 && pos.partialCount < 2) {
+        const dist = Math.abs(price - pos.lastAportePrice) / pos.lastAportePrice * 100;
+        if (dist >= 0.3) {
+            const baseAporte = MONITOR.config.orderQty * (MONITOR.config.partialInPct / 30);
+            const qty = await placeOrder(pos.side, baseAporte);
+            if (qty) {
                 pos.partialCount++;
-                pos.qty            += qty;
+                pos.qty += qty;
                 pos.lastAportePrice = price;
-                addLog(`📥 APORTE #${pos.partialCount} @ ${price} | +${qty} | Total: ${pos.qty.toFixed(6)}`, 'info');
+                addLog(`📥 APORTE #${pos.partialCount} EXECUTADO`, 'info');
             }
         }
     }
 
-    // ── E. ATIVAÇÃO DO TRAILING ─────────────────────────────────────────────
+    // 4. ATIVAÇÃO DO TRAILING
     if (!pos.trailActive && roi >= MONITOR.config.trailAct) {
         pos.trailActive = true;
-        pos.peak        = price;
-        addLog(`🎯 TRAILING ATIVADO @ ROI ${roi.toFixed(2)}% | Pico: ${price}`, 'ok');
+        addLog(`🎯 TRAILING ATIVADO em ${roi.toFixed(2)}% ROI`, 'ok');
     }
 
-    // ── F. GESTÃO DO TRAILING ───────────────────────────────────────────────
+    // 5. GESTÃO DE SAÍDA NO TRAILING
     if (pos.trailActive) {
-
-        if (isL && price > pos.peak) pos.peak = price;
-        if (!isL && price < pos.peak) pos.peak = price;
-
-        const pullbackPct = (isL
-            ? (pos.peak - price) / pos.peak
-            : (price - pos.peak) / pos.peak
-        ) * 100 * MONITOR.config.lev;
-
+        // Sinal contrário no Trailing: 1ª vez = Parcial 50% | 2ª vez = Full Close
         if (contraryTrig) {
             if (!pos.partialExitDone) {
                 const exitQty = pos.qty * (MONITOR.config.partialOutPct / 100);
                 const q = await placeOrder(isL ? 'short' : 'long', exitQty, true);
-                if (q !== null) {
-                    pos.qty            -= q;
+                if (q) {
+                    pos.qty -= q;
                     pos.partialExitDone = true;
-                    addLog(`📤 SAÍDA PARCIAL ${MONITOR.config.partialOutPct}% | Fechado: ${q.toFixed(6)} | Restante: ${pos.qty.toFixed(6)}`, 'info');
-                } else {
-                    addLog('⚠️ Saída parcial rejeitada. Tentará no próximo tick.', 'err');
+                    addLog(`📤 PARCIAL TRAILING: Sinal contrário. Reduzindo ${MONITOR.config.partialOutPct}%`, 'info');
                 }
             } else {
-                addLog('🏁 SAÍDA FINAL: 2º sinal contrário no trailing.', 'ok');
-                const q = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-                if (q !== null) {
-                    MONITOR.position = null;
-                } else {
-                    addLog('⚠️ Saída final rejeitada. Tentará no próximo tick.', 'err');
-                }
-            }
-            return;
-        }
-
-        if (pullbackPct >= MONITOR.config.trailPull) {
-            addLog(`🏁 RECUO ATINGIDO: ${pullbackPct.toFixed(2)}% | Pico: ${pos.peak} | Atual: ${price}`, 'ok');
-            const q = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-            if (q !== null) {
+                addLog(`🏁 FECHAMENTO TRAILING: Segundo sinal contrário detectado.`, 'ok');
+                await placeOrder(isL ? 'short' : 'long', pos.qty, true);
                 MONITOR.position = null;
-            } else {
-                addLog('⚠️ Fechamento por recuo rejeitado. Tentará no próximo tick.', 'err');
+                return;
             }
-            return;
         }
-    }
-}
 
-setInterval(async () => {
-    if (MONITOR.engineRunning) return;
-    MONITOR.engineRunning = true;
-    try {
-        await engineTick();
-    } catch (e) {
-        addLog(`💥 Erro inesperado no engine: ${e.message}`, 'err');
-    } finally {
-        MONITOR.engineRunning = false;
+        // Pullback (Recuo do Topo)
+        if (isL && price > pos.peak) pos.peak = price;
+        if (!isL && price < pos.peak) pos.peak = price;
+        const pb = isL ? (pos.peak - price) / pos.peak * 100 : (price - pos.peak) / pos.peak * 100;
+
+        if (pb * (MONITOR.config.lev || 1) >= MONITOR.config.trailPull) {
+            addLog(`🏁 RECUO TRAILING: Queda de ${pb.toFixed(2)}% do topo. Encerrando.`, 'ok');
+            await placeOrder(isL ? 'short' : 'long', pos.qty, true);
+            MONITOR.position = null;
+        }
     }
 }, 5000);
 
-// ─── Autenticação opcional ─────────────────────────────────────────────────
-
-function requireAuth(req, res, next) {
-    const token = process.env.MONITOR_TOKEN;
-    if (!token) return next();
-    const auth = req.headers['authorization'];
-    if (!auth || auth !== `Bearer ${token}`) {
-        return res.status(401).json({ error: 'Não autorizado.' });
-    }
-    return next();
-}
-
-// ─── Helpers de validação ──────────────────────────────────────────────────
-
-function safeFloat(v, fallback) {
-    const n = parseFloat(v);
-    return isFinite(n) ? n : fallback;
-}
-
-function safeInt(v, fallback) {
-    const n = parseInt(v, 10);
-    return isFinite(n) && n > 0 ? n : fallback;
-}
-
-function parseSide(raw) {
-    const s = String(raw || '').toLowerCase().trim();
-    if (s === 'long'  || s === 'buy')  return 'long';
-    if (s === 'short' || s === 'sell') return 'short';
-    return null;
-}
-
-// ─── ROTAS ─────────────────────────────────────────────────────────────────
-
-app.get('/status', (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 100);
-    res.json({
-        active:        MONITOR.active,
-        symbol:        MONITOR.symbol,
-        config:        MONITOR.config,
-        position:      MONITOR.position,
-        indicators:    MONITOR.indicators,
-        engineRunning: MONITOR.engineRunning,
-        logs:          MONITOR.logs.slice(0, limit),
-    });
-});
-
-app.get('/logs', (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit || '50', 10), 100);
-    res.json({ logs: MONITOR.logs.slice(0, limit) });
-});
-
-app.get('/config', (req, res) => {
-    res.json({ config: MONITOR.config, symbol: MONITOR.symbol });
-});
-
-app.get('/healthz', (req, res) => {
-    res.json({ status: 'ok' });
-});
-
-app.post('/sync-par', requireAuth, async (req, res) => {
-    const { symbol, active, config, position, forceEntry } = req.body || {};
-
-    if (active === false) {
-        if (MONITOR.position) {
-            addLog('⏹️ Monitoramento parado. Tentando fechar posição na Bybit...', 'warn');
-            const pos = MONITOR.position;
-            const q   = await placeOrder(pos.side === 'long' ? 'short' : 'long', pos.qty, true);
-            if (q !== null) {
-                MONITOR.position = null;
-                MONITOR.active   = false;
-                addLog('✅ Posição fechada. Monitor parado.', 'ok');
-                return res.json({ success: true });
-            } else {
-                MONITOR.active = false;
-                addLog('🚨 CRÍTICO: falha ao fechar posição na Bybit ao parar! Feche manualmente na exchange e use /close-position para limpar o estado.', 'err');
-                return res.status(500).json({
-                    success: false,
-                    error:   'Monitor parado, mas falha ao fechar posição na Bybit. Feche MANUALMENTE na exchange e use POST /close-position para limpar o estado local.',
-                    position: MONITOR.position,
-                });
-            }
-        } else {
-            addLog('⏹️ Monitoramento parado pelo app.', 'info');
-        }
-        MONITOR.active = false;
-        return res.json({ success: true });
-    }
-
-    if (active === true) {
-        if (symbol && String(symbol).trim()) {
-            MONITOR.symbol = String(symbol).trim().toUpperCase();
-        }
-
-        if (!MONITOR.symbol) {
-            return res.status(400).json({ success: false, error: 'symbol é obrigatório para iniciar.' });
-        }
-
+app.get('/status', (req, res) => res.json(MONITOR));
+app.get('/heartbeat', (req, res) => res.send('OK'));
+app.post('/sync-par', (req, res) => {
+    const { symbol, active, config, position, forceEntry } = req.body;
+    if (active) {
+        MONITOR.active = true;
+        MONITOR.symbol = symbol || MONITOR.symbol;
         if (config) {
             MONITOR.config = {
-                stopPct:       safeFloat(config.stopPct,       MONITOR.config.stopPct),
-                trailAct:      safeFloat(config.trailAct,      MONITOR.config.trailAct),
-                trailPull:     safeFloat(config.trailPull,     MONITOR.config.trailPull),
-                lev:           safeInt  (config.lev,           MONITOR.config.lev),
-                orderQty:      safeFloat(config.orderQty,      MONITOR.config.orderQty),
-                partialInPct:  safeFloat(config.partialInPct,  MONITOR.config.partialInPct),
-                partialOutPct: safeFloat(config.partialOutPct, MONITOR.config.partialOutPct),
+                stopPct: parseFloat(config.stopPct) || 1.5,
+                trailAct: parseFloat(config.trailAct) || 1.5,
+                trailPull: parseFloat(config.trailPull) || 0.5,
+                lev: parseInt(config.lev) || 1,
+                orderQty: parseFloat(config.orderQty) || 0.1,
+                partialInPct: parseFloat(config.partialInPct) || 5,
+                partialOutPct: parseFloat(config.partialOutPct) || 50,
+                // Configurações do gatilho de entrada
+                emaScore: parseFloat(config.emaScore) || 40,
+                vwapScore: parseFloat(config.vwapScore) || 30,
+                oiScore: parseFloat(config.oiScore) || 20,
+                volRatio: parseFloat(config.volRatio) || 1.2,
+                scoreMin: parseFloat(config.scoreMin) || 50,
+                volMin: parseFloat(config.volMin) || 1.0
             };
+            // Log das configurações de gatilho recebidas
+            addLog(`⚙️ CONFIGURAÇÕES DO GATILHO: scoreMin=${MONITOR.config.scoreMin}, volMin=${MONITOR.config.volMin}, emaScore=${MONITOR.config.emaScore}, vwapScore=${MONITOR.config.vwapScore}, oiScore=${MONITOR.config.oiScore}`, 'info');
         }
-
         if (position) {
-            const side  = parseSide(position.side);
-            const qty   = safeFloat(position.qty,   0);
-            const entry = safeFloat(position.entry, 0);
-            if (!side || qty <= 0 || entry <= 0) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'position.side, .qty e .entry devem ser válidos.',
-                });
-            }
             MONITOR.position = {
-                side,
-                qty,
-                entry,
-                peak:            safeFloat(position.peak || position.entry, entry),
-                trailActive:     !!position.trailActive,
-                partialCount:    Math.min(2, Math.max(0, safeInt(position.partialCount, 0))),
-                lastAportePrice: entry,
-                partialExitDone: false,
+                side: position.side.toLowerCase(),
+                entry: parseFloat(position.entry),
+                qty: parseFloat(position.qty),
+                peak: parseFloat(position.peak || position.entry),
+                trailActive: !!position.trailActive,
+                partialCount: 0,
+                lastAportePrice: parseFloat(position.entry)
             };
+            addLog(`📊 POSIÇÃO RESTAURADA: ${MONITOR.position.side.toUpperCase()} @ ${MONITOR.position.entry}, qty=${MONITOR.position.qty}`, 'info');
         }
-
-        MONITOR.active = true;
-        addLog(
-            `▶️ Monitor: ${MONITOR.symbol} | Lev: ${MONITOR.config.lev}x | ` +
-            `Stop: ${MONITOR.config.stopPct}% | Trail: ${MONITOR.config.trailAct}% | ` +
-            `Recuo: ${MONITOR.config.trailPull}% | PartialIn: ${MONITOR.config.partialInPct}% | ` +
-            `PartialOut: ${MONITOR.config.partialOutPct}%`,
-            'info'
-        );
-
         if (forceEntry) {
-            const side = parseSide(forceEntry.side);
-            if (!side) {
-                return res.status(400).json({ success: false, error: "forceEntry.side inválido. Use 'long' ou 'short'." });
-            }
-
-            const freshData  = await engineScoring();
-            const entryPrice = freshData ? freshData.price : MONITOR.indicators.price;
-            if (!entryPrice || entryPrice <= 0) {
-                return res.status(503).json({ success: false, error: 'Não foi possível obter preço atual da Bybit.' });
-            }
-
-            const qty = await placeOrder(side, MONITOR.config.orderQty);
-            if (qty !== null) {
-                MONITOR.position = {
-                    side,
-                    entry:           entryPrice,
-                    qty,
-                    peak:            entryPrice,
-                    trailActive:     false,
-                    partialCount:    0,
-                    lastAportePrice: entryPrice,
-                    partialExitDone: false,
-                };
-                addLog(`📲 ENTRADA MANUAL ${side.toUpperCase()} @ ${entryPrice} | Qty: ${qty}`, 'ok');
-            } else {
-                return res.status(500).json({ success: false, error: 'Falha ao enviar ordem de entrada manual.' });
-            }
+            addLog(`⚡ FORÇAR ENTRADA: ${forceEntry.side.toUpperCase()}`, 'warn');
+            placeOrder(forceEntry.side, MONITOR.config.orderQty).then(q => {
+                if(q) {
+                    MONITOR.position = { side: forceEntry.side.toLowerCase(), entry: MONITOR.indicators.price, qty: q, peak: 0, trailActive: false, partialCount: 0, lastAportePrice: 0 };
+                    addLog(`✅ ENTRADA FORÇADA EXECUTADA: ${forceEntry.side.toUpperCase()} qty=${q}`, 'ok');
+                } else {
+                    addLog(`❌ FALHA NA ENTRADA FORÇADA: ordem retornou null`, 'err');
+                }
+            });
         }
-    }
-
-    return res.json({ success: true });
-});
-
-app.post('/close-position', requireAuth, async (req, res) => {
-    if (!MONITOR.position) {
-        return res.status(400).json({ success: false, error: 'Nenhuma posição aberta.' });
-    }
-
-    if (MONITOR.engineRunning) {
-        return res.status(503).json({
-            success: false,
-            error:   'Engine em execução. Tente novamente em instantes.',
-        });
-    }
-
-    const pos = MONITOR.position;
-    addLog(`📲 FECHAMENTO MANUAL: ${pos.side.toUpperCase()} ${pos.qty} contratos`, 'warn');
-
-    const q = await placeOrder(pos.side === 'long' ? 'short' : 'long', pos.qty, true);
-
-    if (q !== null) {
-        MONITOR.position = null;
-        addLog(`✅ Posição fechada manualmente. Qty: ${q}`, 'ok');
-        return res.json({ success: true, closedQty: q });
+        addLog(`🚀 MONITORAMENTO INICIADO: ${MONITOR.symbol}`, 'ok');
     } else {
-        return res.status(500).json({
-            success: false,
-            error:   'Falha ao enviar ordem para a Bybit. Verifique os logs.',
-        });
+        MONITOR.active = false;
+        addLog(`⏹️ MONITORAMENTO ENCERRADO`, 'warn');
     }
+    res.json({ success: true });
 });
 
-// ─── Start ──────────────────────────────────────────────────────────────────
-
-app.listen(PORT, () => {
-    console.log(`\n╔══════════════════════════════════════════════╗`);
-    console.log(`║   BYBIT SCANNER PRO v2.0 — ONLINE           ║`);
-    console.log(`║   Porta: ${PORT}                              ║`);
-    console.log(`║   Testnet: ${process.env.USE_TESTNET === 'true' ? 'SIM (sem dinheiro real)    ' : 'NÃO — CONTA REAL!         '}║`);
-    console.log(`╚══════════════════════════════════════════════╝\n`);
-});
+app.listen(PORT, () => console.log(`Scanner Pro v9.5 FINAL-SYNC na porta ${PORT}`));
