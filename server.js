@@ -145,18 +145,34 @@ async function placeOrder(side, qty, isReduce = false) {
         if (!isReduce) {
             const currentPrice = MONITOR.indicators.price || 0;
             if (currentPrice > 0) {
-                const minNotional = 5.2; // mínimo de segurança para bancas pequenas
-                const qtyForMinVal = minNotional / currentPrice;
-                if (finalQty < qtyForMinVal) finalQty = qtyForMinVal;
+                // Arredonda para CIMA ao step para garantir nocional >= 5.2 USDT APÓS o floor.
+                // Sem ceil aqui, Math.floor posterior pode derrubar o nocional abaixo de 5 USDT
+                // (ex: 5.2 / 0.38 = 13.68 → floor = 13 → 13×0.38 = 4.94 → rejeitado).
+                const minNotional = 5.2;
+                const rawMinQty = minNotional / currentPrice;
+                const minQtyForNotional = Math.ceil(rawMinQty / step) * step;
+                if (finalQty < minQtyForNotional) {
+                    addLog(`📐 Qty ajustada de ${finalQty} → ${minQtyForNotional} para atingir nocional mínimo (${(minQtyForNotional * currentPrice).toFixed(2)} USDT)`, 'info');
+                    finalQty = minQtyForNotional;
+                }
             }
             if (finalQty < minQty) finalQty = minQty;
         }
-        // Arredonda para baixo ao step para nunca enviar qty inválida (evita rejeição na Bybit)
+        // Arredonda para baixo ao step (ordens de entrada já chegam alinhadas pelo ceil acima)
         finalQty = Math.floor(finalQty / step) * step;
         finalQty = parseFloat(finalQty.toFixed(precision));
         if (isReduce && finalQty <= 0) {
             addLog(`⚠️ Qty de redução ficou ${finalQty} após arredondamento ao step (${step}). Abortando ordem para evitar rejeição.`, 'warn');
             return null;
+        }
+        // Guarda de segurança final: usa o mesmo currentPrice do bloco acima para consistência.
+        // Limiar 4.99 em vez de 5.0 para não abortar por erro de ponto flutuante na fronteira.
+        if (!isReduce && currentPrice > 0) {
+            const notional = finalQty * currentPrice;
+            if (notional < 4.99) {
+                addLog(`❌ Nocional final (${notional.toFixed(2)} USDT) ainda abaixo do mínimo Bybit (5 USDT). Abortando ordem.`, 'err');
+                return null;
+            }
         }
     } else {
         addLog(`⚠️ Não foi possível obter informações do instrumento ${MONITOR.symbol}. Usando qty original: ${finalQty}`, 'warn');
