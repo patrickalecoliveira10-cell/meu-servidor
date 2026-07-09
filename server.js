@@ -43,7 +43,16 @@ let MONITOR = {
     },
     position: null,
     indicators: { scoreL: 0, scoreS: 0, volRatio: 0, price: 0 },
-    logs: []
+    logs: [],
+    // Seleção automática de moeda por backtest (últimas 24h), igual ao "Escanear" da aba PAR do app
+    tradingPaused: false, // true quando nenhuma moeda tem eficácia >= 60% — monitora mas não entra
+    coinScan: {
+        running: false,
+        lastScanAt: 0,
+        results: [],       // [{symbol, wr, trades, pnl}] ordenado por wr desc
+        bestSymbol: null,
+        bestWr: 0
+    }
 };
 
 function addLog(msg, type = 'info') {
@@ -275,6 +284,247 @@ async function engineScoring() {
     return MONITOR.indicators;
 }
 
+// ─── Backtest de Seleção de Moeda (últimas 24h) ────────────────────────────
+// Reproduz EXATAMENTE a lógica de "Escanear" da aba PAR do app (serverEngineScoring
+// + serverSimulatePosition), só que rodando aqui no servidor com a config vigente
+// (gatilho, PAR e alavancagem da última vez que o monitoramento foi iniciado).
+
+// Busca candles de 1min das últimas ~24h via paginação (Bybit limita 1000 por chamada).
+async function fetchDayCandles(symbol) {
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    let all = [];
+    let endTime = Date.now();
+    for (let page = 0; page < 3; page++) {
+        const kRes = await bybitRequest('GET', '/v5/market/kline', {
+            category: 'linear', symbol, interval: '1', end: String(endTime), limit: '1000'
+        });
+        if (!kRes || !kRes.result || !kRes.result.list || !kRes.result.list.length) break;
+        const batch = kRes.result.list; // mais recente primeiro
+        all = all.concat(batch);
+        const oldestTs = parseFloat(batch[batch.length - 1][0]);
+        if (oldestTs <= oneDayAgo || batch.length < 1000) break;
+        endTime = oldestTs - 1;
+    }
+    if (!all.length) return null;
+    const map = new Map();
+    all.forEach(k => map.set(k[0], k));
+    const sorted = [...map.values()]
+        .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+        .filter(k => parseFloat(k[0]) >= oneDayAgo);
+    return sorted.map(k => ({
+        time: parseFloat(k[0]), open: parseFloat(k[1]), high: parseFloat(k[2]),
+        low: parseFloat(k[3]), close: parseFloat(k[4]), vol: parseFloat(k[5])
+    }));
+}
+
+// Scoring idêntico ao engineScoring(), mas offline (sem chamada de OI real — usa o
+// mesmo proxy de OI por variação de volume que o backtest da aba PAR do app usa,
+// já que não há histórico de Open Interest candle-a-candle disponível).
+function btScoring(candles, config) {
+    if (!candles || candles.length < 200) return null;
+    const closes = candles.map(c => c.close);
+    const curP = closes[closes.length - 1];
+    const prevP = closes[closes.length - 2];
+    if (!isFinite(curP) || !isFinite(prevP)) return null;
+
+    const ema200 = calcEMA(closes, 200);
+    const emaScore = config.emaScore || 40;
+    const vwapScore = config.vwapScore || 30;
+    const oiScore = config.oiScore || 20;
+
+    let sL = curP > ema200 ? emaScore : 0;
+    let sS = curP < ema200 ? emaScore : 0;
+
+    let vwapSum = 0, volSum = 0;
+    candles.slice(-50).forEach(c => {
+        const p = (c.high + c.low + c.close) / 3;
+        vwapSum += p * c.vol; volSum += c.vol;
+    });
+    const vwap = volSum > 0 ? vwapSum / volSum : curP;
+    sL += curP > vwap ? vwapScore : 0;
+    sS += curP < vwap ? vwapScore : 0;
+
+    const recent5 = candles.slice(-5);
+    let volTrend = 0;
+    if (recent5.length >= 2) {
+        const lastVol = candles[candles.length - 1].vol;
+        const volChange = (lastVol - recent5[0].vol) / (recent5[0].vol || 1);
+        if (volChange > 0.3) volTrend = oiScore;
+        else if (volChange > 0.1) volTrend = oiScore * 0.5;
+    }
+    sL += volTrend; sS += volTrend;
+
+    const recent20 = candles.slice(-21, -1);
+    const avgVol = recent20.length ? recent20.reduce((a, b) => a + b.vol, 0) / recent20.length : 0;
+    const lastVol = candles[candles.length - 1].vol;
+    const vRat = avgVol > 0 ? lastVol / avgVol : 0;
+
+    return { scoreL: sL, scoreS: sS, volRatio: vRat, price: curP };
+}
+
+// Simula a gestão de posição do engine real (stop, trailing, flip, aportes) para o backtest.
+function btSimulatePosition(candles, entryIdx, side, config) {
+    const entry = candles[entryIdx].close;
+    const stopPct = config.stopPct || 1.5;
+    const trailAct = config.trailAct || 1.5;
+    const trailPull = config.trailPull || 0.5;
+    const lev = config.lev || 1;
+    const isL = side === 'long';
+
+    let pos = { peak: entry, trailActive: false, partialExitDone: false };
+    let lastRoi = 0;
+
+    for (let i = entryIdx + 1; i < candles.length; i++) {
+        const price = candles[i].close;
+        const roi = (isL ? (price - entry) / entry : (entry - price) / entry) * 100 * lev;
+        lastRoi = roi;
+
+        if (roi <= -stopPct) return { result: 'stop', roi };
+
+        const scoring = btScoring(candles.slice(0, i + 1), config);
+        if (!scoring) continue;
+        const scoreMin = config.scoreMin || 50;
+        const volMin = config.volMin || 1.0;
+        const longTrig = scoring.scoreL >= scoreMin && scoring.volRatio >= volMin;
+        const shortTrig = scoring.scoreS >= scoreMin && scoring.volRatio >= volMin;
+        const contraryTrig = isL ? shortTrig : longTrig;
+
+        if (contraryTrig && roi >= 0 && !pos.trailActive) return { result: 'safety', roi };
+
+        if (!pos.trailActive && roi >= trailAct) { pos.trailActive = true; pos.peak = price; }
+
+        if (pos.trailActive) {
+            if (isL && price > pos.peak) pos.peak = price;
+            if (!isL && price < pos.peak) pos.peak = price;
+            const pullbackPct = (isL ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * lev;
+
+            if (contraryTrig) {
+                if (!pos.partialExitDone) { pos.partialExitDone = true; continue; }
+                return { result: 'trail_exit', roi };
+            }
+            if (pullbackPct >= trailPull) return { result: 'trail_exit', roi };
+        }
+    }
+    return { result: 'timeout', roi: lastRoi };
+}
+
+// Roda o backtest completo (últimas 24h) para uma moeda e retorna a eficácia (win rate).
+async function backtestSymbol(symbol, config) {
+    const candles = await fetchDayCandles(symbol);
+    if (!candles || candles.length < 220) return { symbol, wr: 0, trades: 0, pnl: 0 };
+
+    const scoreMin = config.scoreMin || 50;
+    const volMin = config.volMin || 1.0;
+    let wins = 0, trades = 0, totalPnl = 0;
+
+    for (let i = 200; i < candles.length - 1; i++) {
+        const scoring = btScoring(candles.slice(0, i + 1), config);
+        if (!scoring) continue;
+        const longTrig = scoring.scoreL >= scoreMin && scoring.volRatio >= volMin;
+        const shortTrig = scoring.scoreS >= scoreMin && scoring.volRatio >= volMin;
+        if (longTrig && shortTrig) continue;
+        if (!longTrig && !shortTrig) continue;
+
+        const side = longTrig ? 'long' : 'short';
+        const result = btSimulatePosition(candles, i, side, config);
+        trades++;
+        totalPnl += result.roi;
+        if (result.result !== 'stop' && result.result !== 'timeout') wins++;
+    }
+
+    const wr = trades > 0 ? wins / trades : 0;
+    return { symbol, wr, trades, pnl: totalPnl };
+}
+
+// Busca as moedas com maior volume 24h na Bybit (mesmo filtro do "Escanear" da aba PAR do app).
+async function getTopMovers(limit = 20) {
+    const [instRes, tickRes] = await Promise.all([
+        bybitRequest('GET', '/v5/market/instruments-info', { category: 'linear' }),
+        bybitRequest('GET', '/v5/market/tickers', { category: 'linear' })
+    ]);
+    const instruments = (instRes && instRes.result && instRes.result.list) || [];
+    const tickers = (tickRes && tickRes.result && tickRes.result.list) || [];
+    const instSet = new Set();
+    instruments.forEach(i => { if (i.quoteCoin === 'USDT' && i.status === 'Trading') instSet.add(i.symbol); });
+
+    const candidates = tickers
+        .filter(t => t.symbol.endsWith('USDT') && instSet.has(t.symbol))
+        .map(t => ({ symbol: t.symbol, volUSD: (parseFloat(t.volume24h) || 0) * (parseFloat(t.lastPrice) || 0) }))
+        .filter(t => t.volUSD >= 20000)
+        .sort((a, b) => b.volUSD - a.volUSD)
+        .slice(0, limit)
+        .map(t => t.symbol);
+
+    return candidates;
+}
+
+// Roda o backtest em todas as candidatas e decide qual moeda o servidor deve operar:
+//  - Mantém a moeda atual se ela continuar sendo a de maior eficácia e >= 60%.
+//  - Troca para a de maior eficácia se a atual não for mais a melhor.
+//  - Pausa as entradas (mas continua monitorando/backtestando) se a melhor ficar < 60%.
+// NUNCA troca de moeda enquanto houver posição aberta (chamado só quando MONITOR.position é null).
+async function runCoinScan() {
+    if (MONITOR.coinScan.running) return;
+    MONITOR.coinScan.running = true;
+    try {
+        addLog('🔍 Backtest de seleção de moeda iniciado (últimas 24h, config vigente)...', 'info');
+        const config = MONITOR.config;
+        const movers = await getTopMovers(20);
+        const candidates = new Set(movers);
+        if (MONITOR.symbol) candidates.add(MONITOR.symbol); // sempre reavalia a moeda atual também
+
+        const results = [];
+        for (const sym of candidates) {
+            try {
+                const r = await backtestSymbol(sym, config);
+                results.push(r);
+                addLog(`📊 Backtest ${sym}: eficácia=${(r.wr * 100).toFixed(0)}% trades=${r.trades}`, 'info');
+            } catch (e) {
+                addLog(`⚠️ Backtest falhou para ${sym}: ${e.message}`, 'warn');
+            }
+        }
+
+        results.sort((a, b) => (b.wr - a.wr) || (b.trades - a.trades));
+        MONITOR.coinScan.results = results;
+        MONITOR.coinScan.lastScanAt = Date.now();
+
+        if (!results.length) {
+            addLog('⚠️ Backtest de seleção não retornou resultados. Mantendo moeda atual.', 'warn');
+            return;
+        }
+
+        const best = results[0];
+        MONITOR.coinScan.bestSymbol = best.symbol;
+        MONITOR.coinScan.bestWr = best.wr;
+
+        // Nunca troca de moeda com posição aberta (proteção extra, além do gatilho de chamada)
+        if (MONITOR.position) {
+            addLog('ℹ️ Posição aberta durante o backtest — seleção de moeda será aplicada após o fechamento.', 'info');
+            return;
+        }
+
+        if (best.wr < 0.6) {
+            MONITOR.tradingPaused = true;
+            addLog(`⏸️ Nenhuma moeda com eficácia >= 60% (melhor: ${best.symbol} ${(best.wr * 100).toFixed(0)}%). Servidor NÃO vai operar até melhorar.`, 'warn');
+            return;
+        }
+
+        MONITOR.tradingPaused = false;
+        const currentResult = results.find(r => r.symbol === MONITOR.symbol);
+        const currentIsStillBest = currentResult && currentResult.wr >= 0.6 && currentResult.wr >= best.wr - 1e-9;
+
+        if (currentIsStillBest) {
+            addLog(`✅ Moeda atual (${MONITOR.symbol}) continua com a maior eficácia (${(currentResult.wr * 100).toFixed(0)}%). Mantendo.`, 'ok');
+        } else {
+            const prevSymbol = MONITOR.symbol;
+            MONITOR.symbol = best.symbol;
+            addLog(`🔀 Trocando moeda: ${prevSymbol || '—'} → ${best.symbol} (eficácia ${(best.wr * 100).toFixed(0)}% > atual). Servidor passa a operar ${best.symbol}.`, 'ok');
+        }
+    } finally {
+        MONITOR.coinScan.running = false;
+    }
+}
+
 // ─── Engine (tick único, chamado com lock anti-reentrância abaixo) ─────────
 async function engineTick() {
     if (!MONITOR.active || !MONITOR.symbol) return;
@@ -300,6 +550,9 @@ async function engineTick() {
 
     // --- ENTRADA ---
     if (!MONITOR.position) {
+        if (MONITOR.tradingPaused) {
+            return; // Nenhuma moeda com eficácia >= 60% no último backtest — servidor não entra
+        }
         if (longTrig && shortTrig) {
             addLog('⚖️ Conflito: LONG e SHORT ativos. Ignorando entrada.', 'warn');
             return;
@@ -461,14 +714,31 @@ async function withTradeLock(fn) {
 setInterval(async () => {
     if (MONITOR.tradeLock) return; // ocupado (tick anterior ou ação manual em andamento), pula
     MONITOR.tradeLock = true;
+    const hadPosition = !!MONITOR.position;
     try {
         await engineTick();
+        // Posição acabou de fechar (stop/segurança/trailing/flip-para-flat) — reavalia
+        // a melhor moeda por backtest antes da próxima entrada, fora do lock do engine.
+        if (hadPosition && !MONITOR.position && MONITOR.active) {
+            addLog('📊 Posição fechada. Reavaliando melhor moeda via backtest...', 'info');
+            runCoinScan().catch(e => addLog(`⚠️ Erro no backtest pós-fechamento: ${e.message}`, 'warn'));
+        }
     } catch (e) {
         addLog(`💥 ERRO INESPERADO NO ENGINE (antes invisível!): ${e.message}`, 'err');
     } finally {
         MONITOR.tradeLock = false;
     }
 }, 5000);
+
+// Backtest periódico de seleção de moeda: a cada 10 minutos, se o monitoramento
+// estiver ativo e não houver posição aberta (ainda sem gatilho de entrada), reavalia
+// as moedas para manter sempre a de maior eficácia selecionada.
+setInterval(() => {
+    if (MONITOR.active && !MONITOR.position && !MONITOR.coinScan.running) {
+        addLog('⏱️ Backtest periódico (10 min) de seleção de moeda...', 'info');
+        runCoinScan().catch(e => addLog(`⚠️ Erro no backtest periódico: ${e.message}`, 'warn'));
+    }
+}, 10 * 60 * 1000);
 
 // Rede de segurança final: captura qualquer promise rejeitada que escape
 // de todo o resto do código, e registra no log do app em vez de sumir no console do Render.
@@ -502,6 +772,7 @@ app.post('/sync-par', requireAuth, (req, res) => {
     const { symbol, active, config, position, forceEntry } = req.body || {};
 
     if (active) {
+        const wasInactive = !MONITOR.active;
         MONITOR.active = true;
         MONITOR.symbol = symbol || MONITOR.symbol;
 
@@ -547,6 +818,13 @@ app.post('/sync-par', requireAuth, (req, res) => {
 
         // Verifica credenciais assim que o monitoramento é ligado — feedback imediato no app
         checkCredentials();
+
+        // Início do monitoramento (ou primeiro sync após restart): dispara o backtest de
+        // seleção de moeda (últimas 24h) com a config recém-recebida, igual ao "Escanear" da aba PAR.
+        if (wasInactive || !MONITOR.coinScan.lastScanAt) {
+            addLog('🔍 Monitoramento iniciado: disparando backtest inicial de seleção de moeda...', 'info');
+            runCoinScan().catch(e => addLog(`⚠️ Erro no backtest inicial: ${e.message}`, 'warn'));
+        }
 
         if (forceEntry) {
             addLog(`⚡ FORÇAR ENTRADA: ${forceEntry.side.toUpperCase()}`, 'warn');
