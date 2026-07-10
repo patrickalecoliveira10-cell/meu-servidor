@@ -25,7 +25,7 @@ let MONITOR = {
         stopPct: 1.5, trailAct: 1.5, trailPull: 0.5,
         lev: 1, orderQty: 0.1, partialInPct: 5, partialOutPct: 50,
         emaScore: 40, vwapScore: 30, oiScore: 20,
-        volRatio: 1.2, scoreMin: 50, volMin: 1.0,
+        volRatio: 1.2, scoreMin: 70, volMin: 1.5, // CORREÇÃO: Mesmos thresholds do app
         bankPct: 30 // NOVO: Porcentagem da banca para calcular tamanho da posição
     },
     position: null,
@@ -272,6 +272,7 @@ async function runCoinScan() {
     MONITOR.coinScan.running = true;
     try {
         addLog('🔍 Scanner: Iniciando backtest 24h...', 'info');
+        addLog(`⚙️ Config: scoreMin=${MONITOR.config.scoreMin}, volMin=${MONITOR.config.volMin}`, 'info');
         const tickRes = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear' });
         const movers = (tickRes?.result?.list || []).filter(t => t.symbol.endsWith('USDT') && !MONITOR.symbolBlacklist.includes(t.symbol)).sort((a, b) => (parseFloat(b.volume24h)*parseFloat(b.lastPrice)) - (parseFloat(a.volume24h)*parseFloat(a.lastPrice))).slice(0, 15).map(m => m.symbol);
         addLog(`📊 Scanner: Analisando ${movers.length} moedas com maior volume`, 'info');
