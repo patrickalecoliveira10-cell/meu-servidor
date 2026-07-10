@@ -1,6 +1,6 @@
 // ╔══════════════════════════════════════════════════════════════════════╗
-// ║   BYBIT SCANNER PRO — SERVER v9.8 (ROI & USDT REAL SYNC)             ║
-// ║   Correções: Sincronia de PnL, ROI e Valor Nocional real da Bybit    ║
+// ║   BYBIT SCANNER PRO — SERVER v9.8 (ROI & USDT REAL SYNC + HISTÓRICO) ║
+// ║   Correções: Sincronia de PnL, ROI, Valor Nocional real e HISTÓRICO    ║
 // ╚══════════════════════════════════════════════════════════════════════╝
 
 const express = require('express');
@@ -25,7 +25,8 @@ let MONITOR = {
         stopPct: 1.5, trailAct: 1.5, trailPull: 0.5,
         lev: 1, orderQty: 0.1, partialInPct: 5, partialOutPct: 50,
         emaScore: 40, vwapScore: 30, oiScore: 20,
-        volRatio: 1.2, scoreMin: 50, volMin: 1.0
+        volRatio: 1.2, scoreMin: 50, volMin: 1.0,
+        bankPct: 30 // NOVO: Porcentagem da banca para calcular tamanho da posição
     },
     position: null,
     indicators: { scoreL: 0, scoreS: 0, volRatio: 0, price: 0 },
@@ -36,7 +37,9 @@ let MONITOR = {
     coinScan: {
         running: false, lastScanAt: 0,
         results: [], bestSymbol: null, bestWr: 0
-    }
+    },
+    trades: [], // NOVO: Histórico de operações fechadas
+    balance: 0 // NOVO: Saldo atual para cálculo de posição parcial
 };
 
 // ─── Log ──────────────────────────────────────────────────────────────────────
@@ -46,6 +49,31 @@ function addLog(msg, type = 'info') {
     MONITOR.logs.unshift({ time: Date.now(), msg: `[${ts}] ${msg}`, type });
     if (MONITOR.logs.length > 100) MONITOR.logs.pop();
     console.log(`[${type.toUpperCase()}] ${msg}`);
+}
+
+// ─── Registro de Trades (NOVO) ─────────────────────────────────────────────────
+
+function recordTrade(position, exitPrice, reason) {
+    if (!position) return;
+    
+    const trade = {
+        symbol: MONITOR.symbol,
+        side: position.side,
+        pnl: position.curPnl || 0,
+        entry: position.entry,
+        exit: exitPrice,
+        entryTime: position.entryTime || Date.now(),
+        exitTime: Date.now(),
+        reason: reason,
+        score: MONITOR.indicators.scoreL > MONITOR.indicators.scoreS 
+            ? MONITOR.indicators.scoreL 
+            : MONITOR.indicators.scoreS
+    };
+    
+    MONITOR.trades.unshift(trade);
+    if (MONITOR.trades.length > 50) MONITOR.trades.pop(); // Mantém últimos 50 trades
+    
+    addLog(`📊 Trade registrado: ${trade.symbol} ${trade.side.toUpperCase()} PnL: ${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)} USDT (${reason})`, trade.pnl >= 0 ? 'ok' : 'err');
 }
 
 // ─── Credenciais ──────────────────────────────────────────────────────────────
@@ -113,6 +141,19 @@ async function placeOrder(side, qty, isReduce = false) {
     return null;
 }
 
+// ─── Sincronização de Saldo (NOVO) ─────────────────────────────────────────────
+
+async function syncBalance() {
+    try {
+        const res = await bybitRequest('GET', '/v5/account/wallet-balance', { accountType: 'UNIFIED' });
+        if (res?.retCode === 0 && res.result?.list?.[0]) {
+            const wallet = res.result.list[0];
+            const usdtBalance = parseFloat(wallet.coin?.find(c => c.coin === 'USDT')?.walletBalance || 0);
+            MONITOR.balance = usdtBalance;
+        }
+    } catch (e) {}
+}
+
 // ─── Sincronização de Posição Real (NOVO) ─────────────────────────────────────
 
 async function syncPositionWithBybit() {
@@ -127,7 +168,9 @@ async function syncPositionWithBybit() {
                     MONITOR.position = { 
                         side: bPos.side === 'Buy' ? 'long' : 'short', entry: parseFloat(bPos.avgPrice),
                         qty: size, peak: parseFloat(bPos.markPrice), trailActive: false, partialCount: 0,
-                        lastAportePrice: parseFloat(bPos.avgPrice), partialExitDone: false 
+                        lastAportePrice: parseFloat(bPos.avgPrice), partialExitDone: false,
+                        entryTime: Date.now(), // NOVO: Registra tempo de entrada
+                        maxPartials: 2 // NOVO: Limite de 2 parciais
                     };
                 }
                 // Atribui os dados REAIS vindos da Bybit para o App ler
@@ -140,6 +183,8 @@ async function syncPositionWithBybit() {
                 MONITOR.position.valueUSDT = value; // USDT real da posição
                 MONITOR.position.curRoi = (pnl / (value / lev)) * 100; // ROI real da Bybit
             } else if (MONITOR.position) {
+                // NOVO: Registra trade quando posição fecha na corretora
+                recordTrade(MONITOR.position, MONITOR.indicators.price, 'closed_bybit');
                 addLog('🏁 Posição encerrada na corretora.', 'info');
                 MONITOR.position = null;
             }
@@ -257,6 +302,7 @@ async function runCoinScan() {
 
 async function engineTick() {
     if (!MONITOR.active || !MONITOR.symbol) return;
+    await syncBalance(); // NOVO: Sincroniza saldo para cálculo de posição parcial
     await syncPositionWithBybit(); // SINCRONIZA ROI/USDT REAL ANTES DE TUDO
     const data = await engineScoring(); if (!data) return;
     const { scoreL, scoreS, volRatio, price } = data;
@@ -264,10 +310,44 @@ async function engineTick() {
 
     if (!MONITOR.position) {
         if (MONITOR.tradingPaused) return;
-        const side = scoreL >= scoreMin && volRatio >= volMin ? 'long' : (scoreS >= scoreMin && volRatio >= volMin ? 'short' : null);
+        
+        // NOVO: Evita gatilhos simultâneos - só entra se UM lado der gatilho
+        const longTrigger = scoreL >= scoreMin && volRatio >= volMin;
+        const shortTrigger = scoreS >= scoreMin && volRatio >= volMin;
+        
+        if (longTrigger && shortTrigger) {
+            addLog('⚠️ Gatilhos simultâneos LONG e SHORT. Aguardando confirmação unilateral.', 'warn');
+            return;
+        }
+        
+        const side = longTrigger ? 'long' : (shortTrigger ? 'short' : null);
         if (side) {
-            const qty = await placeOrder(side, MONITOR.config.orderQty);
-            if (qty) MONITOR.position = { side, entry: price, qty, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price, partialExitDone: false };
+            // NOVO: Calcula tamanho da posição baseado na banca
+            let qty = MONITOR.config.orderQty;
+            const bankValue = MONITOR.balance * (MONITOR.config.bankPct / 100);
+            const positionValue = bankValue * MONITOR.config.lev;
+            
+            if (positionValue > 0 && price > 0) {
+                qty = positionValue / price;
+            }
+            
+            const executedQty = await placeOrder(side, qty);
+            if (executedQty) {
+                MONITOR.position = { 
+                    side, 
+                    entry: price, 
+                    qty: executedQty, 
+                    peak: price, 
+                    trailActive: false, 
+                    partialCount: 0, 
+                    lastAportePrice: price, 
+                    partialExitDone: false, 
+                    entryTime: Date.now(),
+                    maxPartials: 2,
+                    initialQty: executedQty // NOVO: Guarda quantidade inicial para cálculo de parciais
+                };
+                addLog(`📥 Entrada ${side.toUpperCase()}: ${executedQty.toFixed(4)} @ ${price.toFixed(4)}`, 'ok');
+            }
         }
         return;
     }
@@ -275,22 +355,89 @@ async function engineTick() {
     const pos = MONITOR.position, isL = pos.side === 'long';
     const roi = pos.curRoi !== undefined ? pos.curRoi : (isL ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * MONITOR.config.lev;
 
-    if (roi <= -MONITOR.config.stopPct) { if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) MONITOR.position = null; return; }
+    // NOVO: Registra trade ao fechar por stop loss
+    if (roi <= -MONITOR.config.stopPct) { 
+        if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
+            recordTrade(pos, price, 'stop_loss');
+            MONITOR.position = null; 
+        }
+        return; 
+    }
 
     const contraryTrig = isL ? (scoreS >= scoreMin && volRatio >= volMin) : (scoreL >= scoreMin && volRatio >= volMin);
+    const sameDirTrig = isL ? (scoreL >= scoreMin && volRatio >= volMin) : (scoreS >= scoreMin && volRatio >= volMin);
+
     if (contraryTrig) {
         if (roi < 0) { // Flip
             if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
-                MONITOR.position = null; const q = await placeOrder(isL ? 'short' : 'long', MONITOR.config.orderQty);
-                if (q) MONITOR.position = { side: isL ? 'short' : 'long', entry: price, qty: q, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price, partialExitDone: false };
+                recordTrade(pos, price, 'flip');
+                MONITOR.position = null; 
+                const q = await placeOrder(isL ? 'short' : 'long', MONITOR.config.orderQty);
+                if (q) MONITOR.position = { side: isL ? 'short' : 'long', entry: price, qty: q, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price, partialExitDone: false, entryTime: Date.now(), maxPartials: 2, initialQty: q };
             }
-        } else if (!pos.trailActive) { if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) MONITOR.position = null; }
+        } else if (!pos.trailActive) { 
+            // NOVO: Se posição positiva e gatilho contrário, fecha posição
+            if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
+                recordTrade(pos, price, 'contrary_signal');
+                MONITOR.position = null; 
+            }
+        } else if (pos.trailActive) {
+            // NOVO: Se trailing ativo e gatilho contrário, fecha 50% parcial
+            if (!pos.partialExitDone) {
+                const partialQty = pos.qty * 0.5;
+                if (await placeOrder(isL ? 'short' : 'long', partialQty, true)) {
+                    pos.qty -= partialQty;
+                    pos.partialExitDone = true;
+                    addLog(`📤 Saída parcial 50%: ${partialQty.toFixed(4)} @ ${price.toFixed(4)}`, 'info');
+                }
+            } else {
+                // NOVO: Se já fechou 50% e outro gatilho contrário, fecha o restante
+                if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
+                    recordTrade(pos, price, 'trailing_partial_exit');
+                    MONITOR.position = null;
+                }
+            }
+        }
     }
 
-    if (!pos.trailActive && roi >= MONITOR.config.trailAct) { pos.trailActive = true; pos.peak = price; }
+    // NOVO: Entrada parcial se gatilho na mesma direção e posição positiva
+    if (sameDirTrig && roi > 0 && pos.partialCount < pos.maxPartials) {
+        let partialQty = MONITOR.config.orderQty;
+        const bankValue = MONITOR.balance * (MONITOR.config.partialInPct / 100);
+        const positionValue = bankValue * MONITOR.config.lev;
+        
+        if (positionValue > 0 && price > 0) {
+            partialQty = positionValue / price;
+        }
+        
+        // Se banca pequena, usa mínimo exigido
+        const minNotional = 5.2;
+        if (partialQty * price < minNotional) {
+            partialQty = minNotional / price;
+        }
+        
+        const executedQty = await placeOrder(pos.side, partialQty);
+        if (executedQty) {
+            pos.qty += executedQty;
+            pos.partialCount++;
+            addLog(`📈 Entrada parcial ${pos.partialCount}/${pos.maxPartials}: +${executedQty.toFixed(4)} @ ${price.toFixed(4)}`, 'ok');
+        }
+    }
+
+    if (!pos.trailActive && roi >= MONITOR.config.trailAct) { 
+        pos.trailActive = true; 
+        pos.peak = price; 
+        addLog(`🚀 Trailing ativado @ ${price.toFixed(4)}`, 'ok');
+    }
+    
     if (pos.trailActive) {
         if (isL && price > pos.peak) pos.peak = price; else if (!isL && price < pos.peak) pos.peak = price;
-        if ((isL ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * MONITOR.config.lev >= MONITOR.config.trailPull) { if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) MONITOR.position = null; }
+        if ((isL ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * MONITOR.config.lev >= MONITOR.config.trailPull) { 
+            if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
+                recordTrade(pos, price, 'trailing_stop');
+                MONITOR.position = null; 
+            }
+        }
     }
 }
 
@@ -309,10 +456,10 @@ app.post('/sync-par', (req, res) => {
     if (active) {
         MONITOR.active = true; if (symbol) MONITOR.symbol = symbol;
         if (config) MONITOR.config = { ...MONITOR.config, ...config };
-        if (position) MONITOR.position = { ...position, lastAportePrice: position.entry, partialExitDone: false, partialCount: 0 };
+        if (position) MONITOR.position = { ...position, lastAportePrice: position.entry, partialExitDone: false, partialCount: 0, entryTime: Date.now(), maxPartials: 2, initialQty: position.qty };
         runCoinScan();
     } else MONITOR.active = false;
     res.json({ success: true });
 });
 
-app.listen(PORT, () => { console.log(`Scanner Pro v9.8 (ROI REAL) na porta ${PORT}`); checkCredentials(); });
+app.listen(PORT, () => { console.log(`Scanner Pro v9.8 (ROI REAL + HISTÓRICO) na porta ${PORT}`); checkCredentials(); });
