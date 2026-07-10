@@ -157,7 +157,7 @@ async function syncBalance() {
 // ─── Sincronização de Posição Real (NOVO) ─────────────────────────────────────
 
 async function syncPositionWithBybit() {
-    if (!MONITOR.symbol) return;
+    if (!MONITOR.symbol || !MONITOR.active) return; // CORREÇÃO: Não sincroniza se servidor desativado
     try {
         const res = await bybitRequest('GET', '/v5/position/list', { category: 'linear', symbol: MONITOR.symbol });
         if (res?.retCode === 0 && res.result?.list?.length > 0) {
@@ -274,6 +274,7 @@ async function runCoinScan() {
         addLog('🔍 Scanner: Iniciando backtest 24h...', 'info');
         const tickRes = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear' });
         const movers = (tickRes?.result?.list || []).filter(t => t.symbol.endsWith('USDT') && !MONITOR.symbolBlacklist.includes(t.symbol)).sort((a, b) => (parseFloat(b.volume24h)*parseFloat(b.lastPrice)) - (parseFloat(a.volume24h)*parseFloat(a.lastPrice))).slice(0, 15).map(m => m.symbol);
+        addLog(`📊 Scanner: Analisando ${movers.length} moedas com maior volume`, 'info');
         const results = [];
         for (const sym of movers) {
             const candles = await fetchDayCandles(sym); if (candles.length < 220) continue;
@@ -290,9 +291,23 @@ async function runCoinScan() {
         results.sort((a, b) => b.wr - a.wr);
         if (results.length > 0) {
             const best = results[0]; MONITOR.coinScan.bestSymbol = best.symbol; MONITOR.coinScan.bestWr = best.wr;
+            addLog(`📈 Scanner: Melhor moeda: ${best.symbol} com WR ${(best.wr*100).toFixed(1)}% (${results[0].wr >= 0.55 ? '✅ APROVADA' : '⚠️ ABAIXO DO MÍNIMO'})`, 'info');
+            
+            // Mostra top 3 para transparência
+            if (results.length >= 3) {
+                addLog(`🏆 Top 3: ${results[0].symbol} (${(results[0].wr*100).toFixed(0)}%), ${results[1].symbol} (${(results[1].wr*100).toFixed(0)}%), ${results[2].symbol} (${(results[2].wr*100).toFixed(0)}%)`, 'info');
+            }
+            
             if (best.wr >= 0.55 && !MONITOR.position) {
-                if (MONITOR.symbol !== best.symbol) { addLog(`🔀 Scanner: Trocando para ${best.symbol} (${(best.wr*100).toFixed(0)}%)`, 'ok'); MONITOR.symbol = best.symbol; }
+                if (MONITOR.symbol !== best.symbol) { 
+                    addLog(`🔀 Scanner: Trocando para ${best.symbol} (${(best.wr*100).toFixed(0)}%)`, 'ok'); 
+                    MONITOR.symbol = best.symbol; 
+                } else {
+                    addLog(`✅ Scanner: Mantendo ${best.symbol} (WR ${(best.wr*100).toFixed(0)}% acima do mínimo)`, 'ok');
+                }
                 MONITOR.tradingPaused = false;
+            } else if (best.wr < 0.55) {
+                addLog(`⚠️ Scanner: Nenhuma moeda atingiu WR mínimo 55%. Mantendo ${MONITOR.symbol || 'nenhuma moeda'}.`, 'warn');
             }
         }
     } finally { MONITOR.coinScan.running = false; }
@@ -367,22 +382,17 @@ async function engineTick() {
     const contraryTrig = isL ? (scoreS >= scoreMin && volRatio >= volMin) : (scoreL >= scoreMin && volRatio >= volMin);
     const sameDirTrig = isL ? (scoreL >= scoreMin && volRatio >= volMin) : (scoreS >= scoreMin && volRatio >= volMin);
 
-    if (contraryTrig) {
-        if (roi < 0) { // Flip
-            if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
-                recordTrade(pos, price, 'flip');
-                MONITOR.position = null; 
-                const q = await placeOrder(isL ? 'short' : 'long', MONITOR.config.orderQty);
-                if (q) MONITOR.position = { side: isL ? 'short' : 'long', entry: price, qty: q, peak: price, trailActive: false, partialCount: 0, lastAportePrice: price, partialExitDone: false, entryTime: Date.now(), maxPartials: 2, initialQty: q };
-            }
-        } else if (!pos.trailActive) { 
-            // NOVO: Se posição positiva e gatilho contrário, fecha posição
+    // REMOVIDO: Flip em prejuízo. Agora só fecha em lucro com sinal contrário.
+    // Em prejuízo, deixa rodar até o stop loss.
+    if (contraryTrig && roi >= 0) {
+        if (!pos.trailActive) {
+            // Se posição positiva e gatilho contrário, fecha posição
             if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
                 recordTrade(pos, price, 'contrary_signal');
-                MONITOR.position = null; 
+                MONITOR.position = null;
             }
         } else if (pos.trailActive) {
-            // NOVO: Se trailing ativo e gatilho contrário, fecha 50% parcial
+            // Se trailing ativo e gatilho contrário, fecha 50% parcial
             if (!pos.partialExitDone) {
                 const partialQty = pos.qty * 0.5;
                 if (await placeOrder(isL ? 'short' : 'long', partialQty, true)) {
@@ -391,7 +401,7 @@ async function engineTick() {
                     addLog(`📤 Saída parcial 50%: ${partialQty.toFixed(4)} @ ${price.toFixed(4)}`, 'info');
                 }
             } else {
-                // NOVO: Se já fechou 50% e outro gatilho contrário, fecha o restante
+                // Se já fechou 50% e outro gatilho contrário, fecha o restante
                 if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
                     recordTrade(pos, price, 'trailing_partial_exit');
                     MONITOR.position = null;
@@ -451,6 +461,35 @@ setInterval(async () => {
 setInterval(() => { if (MONITOR.active && !MONITOR.position) runCoinScan(); }, 10 * 60 * 1000);
 
 app.get('/status', (req, res) => res.json(MONITOR));
+
+// NOVO: Endpoint para fechar posição manualmente pelo app
+app.post('/close-position', async (req, res) => {
+    try {
+        if (!MONITOR.position) {
+            return res.json({ success: false, error: 'Nenhuma posição aberta' });
+        }
+
+        const pos = MONITOR.position;
+        const isL = pos.side === 'long';
+        const price = MONITOR.indicators.price || pos.entry;
+
+        // Fecha a posição na Bybit
+        const success = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
+
+        if (success) {
+            recordTrade(pos, price, 'manual_close');
+            MONITOR.position = null;
+            addLog('🏁 Posição fechada manualmente pelo app', 'info');
+            res.json({ success: true });
+        } else {
+            res.json({ success: false, error: 'Falha ao fechar posição na Bybit' });
+        }
+    } catch (e) {
+        addLog('Erro ao fechar posição: ' + e.message, 'err');
+        res.json({ success: false, error: e.message });
+    }
+});
+
 app.post('/sync-par', (req, res) => {
     const { symbol, active, config, position } = req.body;
     if (active) {
@@ -458,7 +497,14 @@ app.post('/sync-par', (req, res) => {
         if (config) MONITOR.config = { ...MONITOR.config, ...config };
         if (position) MONITOR.position = { ...position, lastAportePrice: position.entry, partialExitDone: false, partialCount: 0, entryTime: Date.now(), maxPartials: 2, initialQty: position.qty };
         runCoinScan();
-    } else MONITOR.active = false;
+    } else {
+        // CORREÇÃO: Limpa completamente o estado ao desativar
+        MONITOR.active = false;
+        MONITOR.symbol = null;
+        MONITOR.position = null;
+        MONITOR.tradingPaused = false;
+        addLog('🛑 Servidor desativado pelo app', 'info');
+    }
     res.json({ success: true });
 });
 
