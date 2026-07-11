@@ -242,6 +242,24 @@ function btScoring(candles, config) {
     let vSum = 0, volSum = 0; candles.slice(-50).forEach(c => { vSum += ((c.high + c.low + c.close) / 3) * c.vol; volSum += c.vol; });
     const vwap = volSum > 0 ? vSum / volSum : curP;
     sL += curP > vwap ? config.vwapScore : 0; sS += curP < vwap ? config.vwapScore : 0;
+
+    // Proxy de OI para o backtest: a Bybit não fornece histórico de Open Interest por
+    // candle de 1min (só os últimos ~5min recentes), então é IMPOSSÍVEL recalcular OI
+    // real para cada ponto do dia anterior. Sem essa pontuação, o score máximo do
+    // backtest ficava travado em emaScore+vwapScore — tornando inatingível qualquer
+    // scoreMin configurado acima desse teto, mesmo que o motor ao vivo (que usa OI
+    // real da API) conseguisse disparar normalmente. Usamos a mesma aproximação que
+    // o app usa (variação de volume das últimas 5 velas) para manter o range de score
+    // do backtest compatível com o do motor ao vivo.
+    const last5 = candles.slice(-5);
+    if (last5.length >= 2 && last5[0].vol > 0) {
+        const volChange = (candles[candles.length - 1].vol - last5[0].vol) / last5[0].vol;
+        let oiProxy = 0;
+        if (volChange > 0.3) oiProxy = config.oiScore;
+        else if (volChange > 0.1) oiProxy = config.oiScore * 0.5;
+        sL += oiProxy; sS += oiProxy;
+    }
+
     const avgVol = candles.slice(-21, -1).reduce((a, b) => a + b.vol, 0) / 20;
     return { scoreL: sL, scoreS: sS, volRatio: avgVol > 0 ? candles[candles.length - 1].vol / avgVol : 0 };
 }
@@ -331,9 +349,13 @@ async function runCoinScan() {
         for (const sym of movers) {
             const candles = await fetchDayCandles(sym);
             if (candles.length < 220) { addLog(`⏭️ Scanner: ${sym} sem candles suficientes do último dia — pulado`, 'info'); continue; }
-            let wins = 0, total = 0;
+            let wins = 0, total = 0, maxScoreSeen = 0, maxVolRatioSeen = 0, samples = 0;
             for (let i = 200; i < candles.length - 20; i += 5) {
                 const sc = btScoring(candles.slice(0, i + 1), MONITOR.config);
+                samples++;
+                const topScore = Math.max(sc.scoreL, sc.scoreS);
+                if (topScore > maxScoreSeen) maxScoreSeen = topScore;
+                if (sc.volRatio > maxVolRatioSeen) maxVolRatioSeen = sc.volRatio;
                 const lTrig = sc.scoreL >= MONITOR.config.scoreMin && sc.volRatio >= MONITOR.config.volMin;
                 const sTrig = sc.scoreS >= MONITOR.config.scoreMin && sc.volRatio >= MONITOR.config.volMin;
                 // Igual ao engineTick: se os dois lados dispararem juntos, não é considerado gatilho de entrada
@@ -348,7 +370,7 @@ async function runCoinScan() {
                 results.push({ symbol: sym, wr, n: total });
                 addLog(`📊 Scanner: ${sym} → WR ${(wr*100).toFixed(1)}% (${total} trades simulados com o gatilho/lógica configurados)`, 'info');
             } else {
-                addLog(`⚪ Scanner: ${sym} — nenhum gatilho de entrada válido no último dia com essa configuração`, 'info');
+                addLog(`⚪ Scanner: ${sym} — nenhum gatilho válido no último dia (melhor score visto: ${maxScoreSeen.toFixed(0)}/${MONITOR.config.scoreMin} exigido | melhor volRatio: ${maxVolRatioSeen.toFixed(2)}x/${MONITOR.config.volMin}x exigido | ${samples} amostras)`, 'info');
             }
         }
         results.sort((a, b) => b.wr - a.wr);
