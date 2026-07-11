@@ -313,17 +313,24 @@ function btSimulatePosition(candles, entryIdx, side, config) {
 async function runCoinScan() {
     if (MONITOR.coinScan.running) return;
     MONITOR.coinScan.running = true;
+    // Guarda a moeda que estava selecionada/em operação ANTES deste escaneamento
+    // (é a que o app escolheu no backtest dele, ou a que o servidor já vinha operando).
+    const originalSymbol = MONITOR.symbol;
     try {
-        addLog(`🔍 Scanner: Analisando com Gatilhos Score>${MONITOR.config.scoreMin} Vol>${MONITOR.config.volMin}`, 'info');
+        const c = MONITOR.config;
+        addLog(`🔍 Scanner: iniciando backtest do último dia — Gatilho EMA${c.emaScore}+VWAP${c.vwapScore}+OI${c.oiScore} | Score≥${c.scoreMin} Vol≥${c.volMin} | SL${c.stopPct}% Trail+${c.trailAct}%/-${c.trailPull}% | Lev${c.lev}x Banca${c.bankPct}% | moeda atual: ${originalSymbol || '—'}`, 'info');
+
         const tickRes = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear' });
         const movers = (tickRes?.result?.list || [])
             .filter(t => t.symbol.endsWith('USDT') && !MONITOR.symbolBlacklist.includes(t.symbol))
             .sort((a, b) => (parseFloat(b.volume24h)*parseFloat(b.lastPrice)) - (parseFloat(a.volume24h)*parseFloat(a.lastPrice)))
             .slice(0, 15).map(m => m.symbol);
-            
+        addLog(`🔍 Scanner: ${movers.length} pares por volume selecionados para testar: ${movers.join(', ')}`, 'info');
+
         const results = [];
         for (const sym of movers) {
-            const candles = await fetchDayCandles(sym); if (candles.length < 220) continue;
+            const candles = await fetchDayCandles(sym);
+            if (candles.length < 220) { addLog(`⏭️ Scanner: ${sym} sem candles suficientes do último dia — pulado`, 'info'); continue; }
             let wins = 0, total = 0;
             for (let i = 200; i < candles.length - 20; i += 5) {
                 const sc = btScoring(candles.slice(0, i + 1), MONITOR.config);
@@ -336,22 +343,36 @@ async function runCoinScan() {
                     total++; if (res.result !== 'stop') wins++;
                 }
             }
-            if (total > 0) results.push({ symbol: sym, wr: wins / total, n: total });
+            if (total > 0) {
+                const wr = wins / total;
+                results.push({ symbol: sym, wr, n: total });
+                addLog(`📊 Scanner: ${sym} → WR ${(wr*100).toFixed(1)}% (${total} trades simulados com o gatilho/lógica configurados)`, 'info');
+            } else {
+                addLog(`⚪ Scanner: ${sym} — nenhum gatilho de entrada válido no último dia com essa configuração`, 'info');
+            }
         }
         results.sort((a, b) => b.wr - a.wr);
+        MONITOR.coinScan.results = results;
+        MONITOR.coinScan.lastScanAt = Date.now();
+
         if (results.length > 0) {
-            const best = results[0]; MONITOR.coinScan.bestSymbol = best.symbol; MONITOR.coinScan.bestWr = best.wr;
-            addLog(`📈 Scanner: Melhor: ${best.symbol} WR ${(best.wr*100).toFixed(1)}% em ${best.n} trades`, 'info');
-            // Sempre adota a moeda mais eficiente encontrada no backtest (sem posição aberta).
-            // Se for diferente da que estava sendo monitorada (inclusive a escolhida pelo app),
-            // o servidor assume o controle e muda — o app acompanha via /status e atualiza o gráfico.
+            const best = results[0];
+            MONITOR.coinScan.bestSymbol = best.symbol; MONITOR.coinScan.bestWr = best.wr;
+            addLog(`🏆 Scanner: moeda mais eficiente do último dia → ${best.symbol} (WR ${(best.wr*100).toFixed(1)}% em ${best.n} trades)`, 'ok');
+
             if (!MONITOR.position) {
-                if (MONITOR.symbol !== best.symbol) {
-                    addLog(`🔀 Scanner: Trocando para ${best.symbol} (mais eficiente no backtest do servidor)`, 'ok');
+                if (originalSymbol === best.symbol) {
+                    addLog(`✅ Scanner: ${best.symbol} já era a moeda selecionada/operada — CONFIRMADA como a mais eficiente. Mantendo operação nela.`, 'ok');
+                } else {
+                    addLog(`🔀 Scanner: ${originalSymbol || 'nenhuma moeda'} NÃO é a mais eficiente → trocando para ${best.symbol} (WR ${(best.wr*100).toFixed(1)}%). Servidor assume operação nela.`, 'ok');
                     MONITOR.symbol = best.symbol;
                 }
                 MONITOR.tradingPaused = false;
+            } else {
+                addLog(`⏸️ Scanner: posição aberta em ${MONITOR.symbol} — resultado registrado, troca de moeda só ocorre com a posição fechada.`, 'info');
             }
+        } else {
+            addLog(`⚠️ Scanner: nenhum par com gatilho válido no último dia — mantendo ${originalSymbol || 'nenhuma moeda'} até o próximo escaneamento.`, 'warn');
         }
     } finally { MONITOR.coinScan.running = false; }
 }
