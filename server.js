@@ -183,6 +183,15 @@ async function syncPositionWithBybit() {
     } catch (e) {}
 }
 
+// ─── Taxas Bybit ──────────────────────────────────────────────────────────────
+// Taxa taker padrão da Bybit para perpétuos USDT: ~0,055% por lado.
+// Round-trip (abertura + fechamento) = 0,11%. Como o ROI aqui é medido sobre a
+// margem (ROI% = variação de preço% * alavancagem), a taxa também precisa ser
+// escalada pela alavancagem para representar seu real impacto no ROI.
+const BYBIT_TAKER_FEE_PCT = 0.055;
+const ROUNDTRIP_FEE_PCT = BYBIT_TAKER_FEE_PCT * 2; // 0.11%
+function netRoi(roi, lev) { return roi - (ROUNDTRIP_FEE_PCT * lev); }
+
 // ─── Cálculos Técnicos ────────────────────────────────────────────────────────
 
 function calcEMA(prices, period) {
@@ -304,7 +313,10 @@ function btSimulatePosition(candles, entryIdx, side, config) {
 
         if (!pos.trailActive) {
             // Segurança: positiva + contrário + trailing ainda não ativo → fecha tudo
-            if (contrary && roi >= 0) return { result: 'safety', roi };
+            // "Positiva" aqui é líquida da taxa de entrada+saída (round-trip),
+            // não o ROI bruto — evita contar como "segura" uma posição que na
+            // prática fecharia no zero a zero ou no prejuízo por causa da taxa.
+            if (contrary && netRoi(roi, config.lev) >= 0) return { result: 'safety', roi };
             // Ativação do trailing
             if (roi >= config.trailAct) { pos.trailActive = true; pos.peak = price; }
             continue;
@@ -437,6 +449,9 @@ async function engineTick() {
 
     const pos = MONITOR.position, isL = pos.side === 'long';
     const roi = pos.curRoi !== undefined ? pos.curRoi : (isL ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * lev;
+    // "Positiva" para as decisões de segurança/aporte é líquida da taxa de
+    // entrada+saída (round-trip), não o ROI bruto de preço.
+    const roiNet = netRoi(roi, lev);
 
     // ── STOP LOSS — prioridade máxima, sempre verificado primeiro ──────────────
     if (roi <= -stopPct) {
@@ -455,8 +470,8 @@ async function engineTick() {
     const sameDir  = !bothTrigNow && (isL ? lTrigNow : sTrigNow);
 
     if (!pos.trailActive) {
-        // ── SEGURANÇA: positiva + gatilho contrário + trailing ainda não ativo → fecha tudo ──
-        if (contrary && roi >= 0) {
+        // ── SEGURANÇA: positiva (líquida de taxa) + gatilho contrário + trailing ainda não ativo → fecha tudo ──
+        if (contrary && roiNet >= 0) {
             if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
                 recordTrade(pos, price, 'contrary_signal');
                 MONITOR.position = null;
@@ -468,7 +483,7 @@ async function engineTick() {
         // ── APORTE PARCIAL (máx. 2, só antes do trailing ativar) ────────────────
         // Respeita o % configurado na aba "Configurar Par"; se a banca for pequena,
         // ainda assim garante o notional mínimo exigido pela Bybit (5.2 USDT).
-        if (sameDir && roi > 0 && pos.partialCount < 2) {
+        if (sameDir && roiNet > 0 && pos.partialCount < 2) {
             const pVal = (MONITOR.balance * (MONITOR.config.partialInPct / 100)) * lev;
             let pQty = pVal / price;
             if (pQty * price < 5.2) pQty = 5.2 / price;
