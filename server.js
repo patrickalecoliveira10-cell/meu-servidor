@@ -1,6 +1,9 @@
 // ╔══════════════════════════════════════════════════════════════════════╗
-// ║   BYBIT SCANNER PRO — SERVER v9.8 (ROI & USDT REAL SYNC + HISTÓRICO) ║
-// ║   Correções: Sincronia de PnL, ROI, Valor Nocional real e HISTÓRICO    ║
+// ║   BYBIT SCANNER PRO — SERVER v9.9 (LÓGICA DE OPERAÇÃO CORRIGIDA)      ║
+// ║   Correções: Segurança/Aportes só antes do trailing, Saídas parciais  ║
+// ║   em 2 etapas após o trailing, Backtest com a mesma lógica do robô,   ║
+// ║   Scanner sempre adota a moeda mais eficiente (sem piso de WR),       ║
+// ║   Re-scan automático toda vez que uma posição é fechada.              ║
 // ╚══════════════════════════════════════════════════════════════════════╝
 
 const express = require('express');
@@ -22,11 +25,22 @@ let MONITOR = {
     engineRunning: false,
     tradeLock: false,
     config: {
-        stopPct: 1.5, trailAct: 1.5, trailPull: 0.5,
-        lev: 1, orderQty: 0.1, partialInPct: 5, partialOutPct: 50,
-        emaScore: 40, vwapScore: 30, oiScore: 20,
-        volRatio: 1.2, scoreMin: 70, volMin: 1.5, // CORREÇÃO: Mesmos thresholds do app
-        bankPct: 30 // NOVO: Porcentagem da banca para calcular tamanho da posição
+        // Gatilhos (Sincronizados com a aba "Gatilhos" do App)
+        emaScore: 40, 
+        vwapScore: 30, 
+        oiScore: 20,
+        scoreMin: 70, // vindo do entrySc do App
+        volMin: 1.5,  // vindo do volRatio do App
+        
+        // Operação (Sincronizados com "Configurar Par" e "Configurações")
+        stopPct: 1.5, 
+        trailAct: 1.5, 
+        trailPull: 0.5,
+        lev: 1, 
+        orderQty: 0.1, 
+        partialInPct: 5, 
+        partialOutPct: 50,
+        bankPct: 30
     },
     position: null,
     indicators: { scoreL: 0, scoreS: 0, volRatio: 0, price: 0 },
@@ -38,8 +52,8 @@ let MONITOR = {
         running: false, lastScanAt: 0,
         results: [], bestSymbol: null, bestWr: 0
     },
-    trades: [], // NOVO: Histórico de operações fechadas
-    balance: 0 // NOVO: Saldo atual para cálculo de posição parcial
+    trades: [], 
+    balance: 0 
 };
 
 // ─── Log ──────────────────────────────────────────────────────────────────────
@@ -51,11 +65,10 @@ function addLog(msg, type = 'info') {
     console.log(`[${type.toUpperCase()}] ${msg}`);
 }
 
-// ─── Registro de Trades (NOVO) ─────────────────────────────────────────────────
+// ─── Registro de Trades ────────────────────────────────────────────────────────
 
 function recordTrade(position, exitPrice, reason) {
     if (!position) return;
-    
     const trade = {
         symbol: MONITOR.symbol,
         side: position.side,
@@ -65,25 +78,11 @@ function recordTrade(position, exitPrice, reason) {
         entryTime: position.entryTime || Date.now(),
         exitTime: Date.now(),
         reason: reason,
-        score: MONITOR.indicators.scoreL > MONITOR.indicators.scoreS 
-            ? MONITOR.indicators.scoreL 
-            : MONITOR.indicators.scoreS
+        score: Math.max(MONITOR.indicators.scoreL, MONITOR.indicators.scoreS)
     };
-    
     MONITOR.trades.unshift(trade);
-    if (MONITOR.trades.length > 50) MONITOR.trades.pop(); // Mantém últimos 50 trades
-    
+    if (MONITOR.trades.length > 50) MONITOR.trades.pop();
     addLog(`📊 Trade registrado: ${trade.symbol} ${trade.side.toUpperCase()} PnL: ${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)} USDT (${reason})`, trade.pnl >= 0 ? 'ok' : 'err');
-}
-
-// ─── Credenciais ──────────────────────────────────────────────────────────────
-
-function checkCredentials() {
-    if (!process.env.BYBIT_API_KEY || !process.env.BYBIT_API_SECRET) {
-        addLog('🚨 CRÍTICO: API Keys não configuradas!', 'err');
-        return false;
-    }
-    return true;
 }
 
 // ─── Bybit API ────────────────────────────────────────────────────────────────
@@ -103,9 +102,7 @@ async function bybitRequest(method, endpoint, data = {}) {
             data: method !== 'GET' ? parameters : undefined, timeout: 8000,
         });
         return res.data;
-    } catch (e) {
-        return { error: e.message };
-    }
+    } catch (e) { return { error: e.message }; }
 }
 
 // ─── Ordem ────────────────────────────────────────────────────────────────────
@@ -132,32 +129,28 @@ async function placeOrder(side, qty, isReduce = false) {
     });
     if (res?.retCode === 0) return finalQty;
     if (res?.retCode === 110126) {
-        const sym = MONITOR.symbol;
-        if (!MONITOR.symbolBlacklist.includes(sym)) MONITOR.symbolBlacklist.push(sym);
-        addLog(`🚫 ${sym} exige acordo. Bloqueada.`, 'err');
+        if (!MONITOR.symbolBlacklist.includes(MONITOR.symbol)) MONITOR.symbolBlacklist.push(MONITOR.symbol);
+        addLog(`🚫 ${MONITOR.symbol} exige acordo. Bloqueada.`, 'err');
         MONITOR.tradingPaused = true;
         runCoinScan().catch(()=>{});
     }
     return null;
 }
 
-// ─── Sincronização de Saldo (NOVO) ─────────────────────────────────────────────
+// ─── Sincronização ────────────────────────────────────────────────────────────
 
 async function syncBalance() {
     try {
         const res = await bybitRequest('GET', '/v5/account/wallet-balance', { accountType: 'UNIFIED' });
         if (res?.retCode === 0 && res.result?.list?.[0]) {
             const wallet = res.result.list[0];
-            const usdtBalance = parseFloat(wallet.coin?.find(c => c.coin === 'USDT')?.walletBalance || 0);
-            MONITOR.balance = usdtBalance;
+            MONITOR.balance = parseFloat(wallet.coin?.find(c => c.coin === 'USDT')?.walletBalance || 0);
         }
     } catch (e) {}
 }
 
-// ─── Sincronização de Posição Real (NOVO) ─────────────────────────────────────
-
 async function syncPositionWithBybit() {
-    if (!MONITOR.symbol || !MONITOR.active) return; // CORREÇÃO: Não sincroniza se servidor desativado
+    if (!MONITOR.symbol || !MONITOR.active) return;
     try {
         const res = await bybitRequest('GET', '/v5/position/list', { category: 'linear', symbol: MONITOR.symbol });
         if (res?.retCode === 0 && res.result?.list?.length > 0) {
@@ -165,28 +158,26 @@ async function syncPositionWithBybit() {
             const size = parseFloat(bPos.size);
             if (size > 0) {
                 if (!MONITOR.position) {
-                    MONITOR.position = { 
+                    MONITOR.position = {
                         side: bPos.side === 'Buy' ? 'long' : 'short', entry: parseFloat(bPos.avgPrice),
                         qty: size, peak: parseFloat(bPos.markPrice), trailActive: false, partialCount: 0,
-                        lastAportePrice: parseFloat(bPos.avgPrice), partialExitDone: false,
-                        entryTime: Date.now(), // NOVO: Registra tempo de entrada
-                        maxPartials: 2 // NOVO: Limite de 2 parciais
+                        lastAportePrice: parseFloat(bPos.avgPrice), partialExitDone: false, partialExitCount: 0,
+                        entryTime: Date.now(), maxPartials: 2
                     };
                 }
-                // Atribui os dados REAIS vindos da Bybit para o App ler
                 const pnl = parseFloat(bPos.unrealisedPnl);
                 const value = parseFloat(bPos.positionValue);
                 const lev = parseFloat(bPos.leverage) || MONITOR.config.lev;
                 MONITOR.position.qty = size;
                 MONITOR.position.entry = parseFloat(bPos.avgPrice);
                 MONITOR.position.curPnl = pnl;
-                MONITOR.position.valueUSDT = value; // USDT real da posição
-                MONITOR.position.curRoi = (pnl / (value / lev)) * 100; // ROI real da Bybit
+                MONITOR.position.valueUSDT = value;
+                MONITOR.position.curRoi = (pnl / (value / lev)) * 100;
             } else if (MONITOR.position) {
-                // NOVO: Registra trade quando posição fecha na corretora
                 recordTrade(MONITOR.position, MONITOR.indicators.price, 'closed_bybit');
                 addLog('🏁 Posição encerrada na corretora.', 'info');
                 MONITOR.position = null;
+                runCoinScan().catch(() => {});
             }
         }
     } catch (e) {}
@@ -209,11 +200,13 @@ async function engineScoring() {
     const prices = list.map(k => parseFloat(k[4]));
     const curP = prices[prices.length - 1];
     const ema200 = calcEMA(prices, 200);
+    
     let sL = curP > ema200 ? MONITOR.config.emaScore : 0, sS = curP < ema200 ? MONITOR.config.emaScore : 0;
     let vSum = 0, volSum = 0;
     list.slice(-50).forEach(k => { vSum += ((parseFloat(k[2]) + parseFloat(k[3]) + parseFloat(k[4])) / 3) * parseFloat(k[5]); volSum += parseFloat(k[5]); });
     const vwap = volSum > 0 ? vSum / volSum : curP;
     sL += curP > vwap ? MONITOR.config.vwapScore : 0; sS += curP < vwap ? MONITOR.config.vwapScore : 0;
+    
     const oiRes = await bybitRequest('GET', '/v5/market/open-interest', { category: 'linear', symbol: MONITOR.symbol, intervalTime: '5min', limit: '2' });
     if (oiRes?.result?.list?.length >= 2) {
         if (parseFloat(oiRes.result.list[0].openInterest) > parseFloat(oiRes.result.list[1].openInterest)) {
@@ -253,15 +246,65 @@ function btScoring(candles, config) {
     return { scoreL: sL, scoreS: sS, volRatio: avgVol > 0 ? candles[candles.length - 1].vol / avgVol : 0 };
 }
 
+// Reaproveita btScoring (sem alterá-la) para calcular o score em QUALQUER índice
+// do array de candles, usando uma janela final de até 250 velas (suficiente para
+// estabilizar a EMA200) terminando naquele índice. Necessário para simular, vela
+// a vela, a mesma lógica de gatilho contrário/favorável usada ao vivo pelo engineTick.
+function btScoringAt(candles, idx, config) {
+    if (idx < 200) return null;
+    const start = Math.max(0, idx - 250);
+    return btScoring(candles.slice(start, idx + 1), config);
+}
+
+// Simula a posição usando EXATAMENTE a mesma lógica do engineTick:
+//  - Stop loss tem prioridade máxima.
+//  - Antes do trailing ativar: gatilho contrário + ROI positivo fecha tudo (segurança).
+//  - Antes do trailing ativar: gatilho a favor + ROI positivo faria aporte (não altera
+//    a classificação de resultado do backtest, que é só win/loss).
+//  - Depois do trailing ativar: recuo (pull) atingido fecha tudo (trailing stop).
+//  - Depois do trailing ativar e recuo não atingido: gatilho contrário fecha 50%,
+//    se repetir fecha o restante (100%).
 function btSimulatePosition(candles, entryIdx, side, config) {
-    const entry = candles[entryIdx].close; let pos = { peak: entry, trailActive: false };
-    for (let i = entryIdx + 1; i < candles.length; i++) {
-        const price = candles[i].close, roi = (side === 'long' ? (price - entry) / entry : (entry - price) / entry) * 100 * config.lev;
-        if (roi <= -config.stopPct) return { result: 'stop', roi };
-        if (!pos.trailActive && roi >= config.trailAct) pos.trailActive = true;
-        if (pos.trailActive) {
-            if (side === 'long' && price > pos.peak) pos.peak = price; else if (side === 'short' && price < pos.peak) pos.peak = price;
-            if ((side === 'long' ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * config.lev >= config.trailPull) return { result: 'trail', roi };
+    const entry = candles[entryIdx].close;
+    const isL = side === 'long';
+    let pos = { peak: entry, trailActive: false, partialExitCount: 0 };
+
+    const maxStep = Math.min(entryIdx + 60, candles.length); // janela de simulação (60 velas ~ suficiente)
+    for (let i = entryIdx + 1; i < maxStep; i++) {
+        const price = candles[i].close;
+        const roi = (isL ? (price - entry) / entry : (entry - price) / entry) * 100 * config.lev;
+
+        // Stop loss — prioridade máxima
+        if (roi <= -config.stopPct) return { result: 'stop', roi: -config.stopPct };
+
+        const sc = btScoringAt(candles, i, config);
+        const lTrig = !!sc && sc.scoreL >= config.scoreMin && sc.volRatio >= config.volMin;
+        const sTrig = !!sc && sc.scoreS >= config.scoreMin && sc.volRatio >= config.volMin;
+        // Não considera gatilho quando os dois lados disparam ao mesmo tempo (igual ao engineTick)
+        const bothTrig = lTrig && sTrig;
+        const contrary = !bothTrig && (isL ? sTrig : lTrig);
+
+        if (!pos.trailActive) {
+            // Segurança: positiva + contrário + trailing ainda não ativo → fecha tudo
+            if (contrary && roi >= 0) return { result: 'safety', roi };
+            // Ativação do trailing
+            if (roi >= config.trailAct) { pos.trailActive = true; pos.peak = price; }
+            continue;
+        }
+
+        // Trailing já ativo — atualiza pico
+        if (isL && price > pos.peak) pos.peak = price;
+        else if (!isL && price < pos.peak) pos.peak = price;
+        const pull = (isL ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * config.lev;
+
+        // Recuo atingido → fecha o restante
+        if (pull >= config.trailPull) return { result: 'trail', roi };
+
+        // Recuo ainda não atingido, mas veio gatilho contrário → saída parcial em 2 etapas
+        if (contrary) {
+            pos.partialExitCount = (pos.partialExitCount || 0) + 1;
+            if (pos.partialExitCount >= 2) return { result: 'contrary_partial_final', roi };
+            // primeira parcial (50%): posição continua aberta com o restante
         }
     }
     return { result: 'timeout', roi: 0 };
@@ -271,44 +314,43 @@ async function runCoinScan() {
     if (MONITOR.coinScan.running) return;
     MONITOR.coinScan.running = true;
     try {
-        addLog('🔍 Scanner: Iniciando backtest 24h...', 'info');
-        addLog(`⚙️ Config: scoreMin=${MONITOR.config.scoreMin}, volMin=${MONITOR.config.volMin}`, 'info');
+        addLog(`🔍 Scanner: Analisando com Gatilhos Score>${MONITOR.config.scoreMin} Vol>${MONITOR.config.volMin}`, 'info');
         const tickRes = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear' });
-        const movers = (tickRes?.result?.list || []).filter(t => t.symbol.endsWith('USDT') && !MONITOR.symbolBlacklist.includes(t.symbol)).sort((a, b) => (parseFloat(b.volume24h)*parseFloat(b.lastPrice)) - (parseFloat(a.volume24h)*parseFloat(a.lastPrice))).slice(0, 15).map(m => m.symbol);
-        addLog(`📊 Scanner: Analisando ${movers.length} moedas com maior volume`, 'info');
+        const movers = (tickRes?.result?.list || [])
+            .filter(t => t.symbol.endsWith('USDT') && !MONITOR.symbolBlacklist.includes(t.symbol))
+            .sort((a, b) => (parseFloat(b.volume24h)*parseFloat(b.lastPrice)) - (parseFloat(a.volume24h)*parseFloat(a.lastPrice)))
+            .slice(0, 15).map(m => m.symbol);
+            
         const results = [];
         for (const sym of movers) {
             const candles = await fetchDayCandles(sym); if (candles.length < 220) continue;
-            let wins = 0, trades = 0;
-            for (let i = 200; i < candles.length - 1; i += 5) {
+            let wins = 0, total = 0;
+            for (let i = 200; i < candles.length - 20; i += 5) {
                 const sc = btScoring(candles.slice(0, i + 1), MONITOR.config);
-                if (sc && (sc.scoreL >= MONITOR.config.scoreMin || sc.scoreS >= MONITOR.config.scoreMin) && sc.volRatio >= MONITOR.config.volMin) {
-                    const res = btSimulatePosition(candles, i, sc.scoreL >= MONITOR.config.scoreMin ? 'long' : 'short', MONITOR.config);
-                    trades++; if (res.result !== 'stop') wins++;
+                const lTrig = sc.scoreL >= MONITOR.config.scoreMin && sc.volRatio >= MONITOR.config.volMin;
+                const sTrig = sc.scoreS >= MONITOR.config.scoreMin && sc.volRatio >= MONITOR.config.volMin;
+                // Igual ao engineTick: se os dois lados dispararem juntos, não é considerado gatilho de entrada
+                if (lTrig && sTrig) continue;
+                if (lTrig || sTrig) {
+                    const res = btSimulatePosition(candles, i, lTrig ? 'long' : 'short', MONITOR.config);
+                    total++; if (res.result !== 'stop') wins++;
                 }
             }
-            results.push({ symbol: sym, wr: trades > 0 ? wins / trades : 0 });
+            if (total > 0) results.push({ symbol: sym, wr: wins / total, n: total });
         }
         results.sort((a, b) => b.wr - a.wr);
         if (results.length > 0) {
             const best = results[0]; MONITOR.coinScan.bestSymbol = best.symbol; MONITOR.coinScan.bestWr = best.wr;
-            addLog(`📈 Scanner: Melhor moeda: ${best.symbol} com WR ${(best.wr*100).toFixed(1)}% (${results[0].wr >= 0.55 ? '✅ APROVADA' : '⚠️ ABAIXO DO MÍNIMO'})`, 'info');
-            
-            // Mostra top 3 para transparência
-            if (results.length >= 3) {
-                addLog(`🏆 Top 3: ${results[0].symbol} (${(results[0].wr*100).toFixed(0)}%), ${results[1].symbol} (${(results[1].wr*100).toFixed(0)}%), ${results[2].symbol} (${(results[2].wr*100).toFixed(0)}%)`, 'info');
-            }
-            
-            if (best.wr >= 0.55 && !MONITOR.position) {
-                if (MONITOR.symbol !== best.symbol) { 
-                    addLog(`🔀 Scanner: Trocando para ${best.symbol} (${(best.wr*100).toFixed(0)}%)`, 'ok'); 
-                    MONITOR.symbol = best.symbol; 
-                } else {
-                    addLog(`✅ Scanner: Mantendo ${best.symbol} (WR ${(best.wr*100).toFixed(0)}% acima do mínimo)`, 'ok');
+            addLog(`📈 Scanner: Melhor: ${best.symbol} WR ${(best.wr*100).toFixed(1)}% em ${best.n} trades`, 'info');
+            // Sempre adota a moeda mais eficiente encontrada no backtest (sem posição aberta).
+            // Se for diferente da que estava sendo monitorada (inclusive a escolhida pelo app),
+            // o servidor assume o controle e muda — o app acompanha via /status e atualiza o gráfico.
+            if (!MONITOR.position) {
+                if (MONITOR.symbol !== best.symbol) {
+                    addLog(`🔀 Scanner: Trocando para ${best.symbol} (mais eficiente no backtest do servidor)`, 'ok');
+                    MONITOR.symbol = best.symbol;
                 }
                 MONITOR.tradingPaused = false;
-            } else if (best.wr < 0.55) {
-                addLog(`⚠️ Scanner: Nenhuma moeda atingiu WR mínimo 55%. Mantendo ${MONITOR.symbol || 'nenhuma moeda'}.`, 'warn');
             }
         }
     } finally { MONITOR.coinScan.running = false; }
@@ -318,49 +360,31 @@ async function runCoinScan() {
 
 async function engineTick() {
     if (!MONITOR.active || !MONITOR.symbol) return;
-    await syncBalance(); // NOVO: Sincroniza saldo para cálculo de posição parcial
-    await syncPositionWithBybit(); // SINCRONIZA ROI/USDT REAL ANTES DE TUDO
+    await syncBalance();
+    await syncPositionWithBybit();
     const data = await engineScoring(); if (!data) return;
     const { scoreL, scoreS, volRatio, price } = data;
-    const scoreMin = MONITOR.config.scoreMin, volMin = MONITOR.config.volMin;
+    const { scoreMin, volMin, stopPct, trailAct, trailPull, lev, bankPct } = MONITOR.config;
 
     if (!MONITOR.position) {
         if (MONITOR.tradingPaused) return;
-        
-        // NOVO: Evita gatilhos simultâneos - só entra se UM lado der gatilho
-        const longTrigger = scoreL >= scoreMin && volRatio >= volMin;
-        const shortTrigger = scoreS >= scoreMin && volRatio >= volMin;
-        
-        if (longTrigger && shortTrigger) {
-            addLog('⚠️ Gatilhos simultâneos LONG e SHORT. Aguardando confirmação unilateral.', 'warn');
-            return;
-        }
-        
-        const side = longTrigger ? 'long' : (shortTrigger ? 'short' : null);
+        const lTrig = scoreL >= scoreMin && volRatio >= volMin;
+        const sTrig = scoreS >= scoreMin && volRatio >= volMin;
+        // Os dois lados dispararam ao mesmo tempo → não entra, espera só um lado confirmar
+        if (lTrig && sTrig) return;
+
+        const side = lTrig ? 'long' : (sTrig ? 'short' : null);
         if (side) {
-            // NOVO: Calcula tamanho da posição baseado na banca
             let qty = MONITOR.config.orderQty;
-            const bankValue = MONITOR.balance * (MONITOR.config.bankPct / 100);
-            const positionValue = bankValue * MONITOR.config.lev;
-            
-            if (positionValue > 0 && price > 0) {
-                qty = positionValue / price;
-            }
-            
+            const positionValue = (MONITOR.balance * (bankPct / 100)) * lev;
+            if (positionValue > 0 && price > 0) qty = positionValue / price;
+
             const executedQty = await placeOrder(side, qty);
             if (executedQty) {
-                MONITOR.position = { 
-                    side, 
-                    entry: price, 
-                    qty: executedQty, 
-                    peak: price, 
-                    trailActive: false, 
-                    partialCount: 0, 
-                    lastAportePrice: price, 
-                    partialExitDone: false, 
-                    entryTime: Date.now(),
-                    maxPartials: 2,
-                    initialQty: executedQty // NOVO: Guarda quantidade inicial para cálculo de parciais
+                MONITOR.position = {
+                    side, entry: price, qty: executedQty, peak: price, trailActive: false,
+                    partialCount: 0, lastAportePrice: price, partialExitDone: false, partialExitCount: 0,
+                    entryTime: Date.now(), maxPartials: 2, initialQty: executedQty
                 };
                 addLog(`📥 Entrada ${side.toUpperCase()}: ${executedQty.toFixed(4)} @ ${price.toFixed(4)}`, 'ok');
             }
@@ -369,84 +393,90 @@ async function engineTick() {
     }
 
     const pos = MONITOR.position, isL = pos.side === 'long';
-    const roi = pos.curRoi !== undefined ? pos.curRoi : (isL ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * MONITOR.config.lev;
+    const roi = pos.curRoi !== undefined ? pos.curRoi : (isL ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry) * 100 * lev;
 
-    // NOVO: Registra trade ao fechar por stop loss
-    if (roi <= -MONITOR.config.stopPct) { 
+    // ── STOP LOSS — prioridade máxima, sempre verificado primeiro ──────────────
+    if (roi <= -stopPct) {
         if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
             recordTrade(pos, price, 'stop_loss');
-            MONITOR.position = null; 
+            MONITOR.position = null;
+            runCoinScan().catch(() => {}); // reavalia a moeda mais eficiente após fechar
         }
-        return; 
+        return;
     }
 
-    const contraryTrig = isL ? (scoreS >= scoreMin && volRatio >= volMin) : (scoreL >= scoreMin && volRatio >= volMin);
-    const sameDirTrig = isL ? (scoreL >= scoreMin && volRatio >= volMin) : (scoreS >= scoreMin && volRatio >= volMin);
+    const lTrigNow = scoreL >= scoreMin && volRatio >= volMin;
+    const sTrigNow = scoreS >= scoreMin && volRatio >= volMin;
+    const bothTrigNow = lTrigNow && sTrigNow; // ambos ao mesmo tempo não conta como gatilho válido
+    const contrary = !bothTrigNow && (isL ? sTrigNow : lTrigNow);
+    const sameDir  = !bothTrigNow && (isL ? lTrigNow : sTrigNow);
 
-    // REMOVIDO: Flip em prejuízo. Agora só fecha em lucro com sinal contrário.
-    // Em prejuízo, deixa rodar até o stop loss.
-    if (contraryTrig && roi >= 0) {
-        if (!pos.trailActive) {
-            // Se posição positiva e gatilho contrário, fecha posição
+    if (!pos.trailActive) {
+        // ── SEGURANÇA: positiva + gatilho contrário + trailing ainda não ativo → fecha tudo ──
+        if (contrary && roi >= 0) {
             if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
                 recordTrade(pos, price, 'contrary_signal');
                 MONITOR.position = null;
+                runCoinScan().catch(() => {});
             }
-        } else if (pos.trailActive) {
-            // Se trailing ativo e gatilho contrário, fecha 50% parcial
-            if (!pos.partialExitDone) {
-                const partialQty = pos.qty * 0.5;
-                if (await placeOrder(isL ? 'short' : 'long', partialQty, true)) {
-                    pos.qty -= partialQty;
-                    pos.partialExitDone = true;
-                    addLog(`📤 Saída parcial 50%: ${partialQty.toFixed(4)} @ ${price.toFixed(4)}`, 'info');
-                }
-            } else {
-                // Se já fechou 50% e outro gatilho contrário, fecha o restante
-                if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
-                    recordTrade(pos, price, 'trailing_partial_exit');
-                    MONITOR.position = null;
-                }
-            }
+            return;
         }
+
+        // ── APORTE PARCIAL (máx. 2, só antes do trailing ativar) ────────────────
+        // Respeita o % configurado na aba "Configurar Par"; se a banca for pequena,
+        // ainda assim garante o notional mínimo exigido pela Bybit (5.2 USDT).
+        if (sameDir && roi > 0 && pos.partialCount < 2) {
+            const pVal = (MONITOR.balance * (MONITOR.config.partialInPct / 100)) * lev;
+            let pQty = pVal / price;
+            if (pQty * price < 5.2) pQty = 5.2 / price;
+            const exe = await placeOrder(pos.side, pQty);
+            if (exe) { pos.qty += exe; pos.partialCount++; addLog(`📈 Aporte ${pos.partialCount}/2: +${exe.toFixed(4)}`, 'ok'); }
+        }
+
+        // ── ATIVAÇÃO DO TRAILING ─────────────────────────────────────────────────
+        if (roi >= trailAct) {
+            pos.trailActive = true;
+            pos.peak = price;
+            addLog(`🚀 Trailing ativo @ ${price}`, 'ok');
+        }
+        return;
     }
 
-    // NOVO: Entrada parcial se gatilho na mesma direção e posição positiva
-    if (sameDirTrig && roi > 0 && pos.partialCount < pos.maxPartials) {
-        let partialQty = MONITOR.config.orderQty;
-        const bankValue = MONITOR.balance * (MONITOR.config.partialInPct / 100);
-        const positionValue = bankValue * MONITOR.config.lev;
-        
-        if (positionValue > 0 && price > 0) {
-            partialQty = positionValue / price;
+    // ── TRAILING JÁ ATIVO ──────────────────────────────────────────────────────
+    if (isL && price > pos.peak) pos.peak = price;
+    else if (!isL && price < pos.peak) pos.peak = price;
+
+    const pull = (isL ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * lev;
+
+    // Recuo atingido → fecha o restante da posição (trailing stop)
+    if (pull >= trailPull) {
+        if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
+            recordTrade(pos, price, 'trailing_stop');
+            MONITOR.position = null;
+            runCoinScan().catch(() => {});
         }
-        
-        // Se banca pequena, usa mínimo exigido
-        const minNotional = 5.2;
-        if (partialQty * price < minNotional) {
-            partialQty = minNotional / price;
-        }
-        
-        const executedQty = await placeOrder(pos.side, partialQty);
-        if (executedQty) {
-            pos.qty += executedQty;
-            pos.partialCount++;
-            addLog(`📈 Entrada parcial ${pos.partialCount}/${pos.maxPartials}: +${executedQty.toFixed(4)} @ ${price.toFixed(4)}`, 'ok');
-        }
+        return;
     }
 
-    if (!pos.trailActive && roi >= MONITOR.config.trailAct) { 
-        pos.trailActive = true; 
-        pos.peak = price; 
-        addLog(`🚀 Trailing ativado @ ${price.toFixed(4)}`, 'ok');
-    }
-    
-    if (pos.trailActive) {
-        if (isL && price > pos.peak) pos.peak = price; else if (!isL && price < pos.peak) pos.peak = price;
-        if ((isL ? (pos.peak - price) / pos.peak : (price - pos.peak) / pos.peak) * 100 * MONITOR.config.lev >= MONITOR.config.trailPull) { 
+    // Recuo ainda não atingido, mas apareceu gatilho contrário → saída parcial em 2 etapas
+    if (contrary) {
+        if ((pos.partialExitCount || 0) === 0) {
+            // 1ª parcial: fecha o % configurado em "Configurar Par" (padrão 50%)
+            const exitFrac = Math.min(0.95, Math.max(0.05, (MONITOR.config.partialOutPct || 50) / 100));
+            const exitQty = pos.qty * exitFrac;
+            const exe = await placeOrder(isL ? 'short' : 'long', exitQty, true);
+            if (exe) {
+                pos.qty -= exe;
+                pos.partialExitCount = 1;
+                addLog(`📤 Saída parcial 1/2 (${(exitFrac*100).toFixed(0)}%) por sinal contrário: -${exe.toFixed(4)}`, 'ok');
+            }
+        } else if (pos.partialExitCount === 1) {
+            // 2ª parcial: fecha o restante (os outros 50%, ou o que sobrou)
             if (await placeOrder(isL ? 'short' : 'long', pos.qty, true)) {
-                recordTrade(pos, price, 'trailing_stop');
-                MONITOR.position = null; 
+                recordTrade(pos, price, 'contrary_partial_final');
+                addLog(`📤 Saída parcial 2/2 (restante) por sinal contrário — posição encerrada`, 'ok');
+                MONITOR.position = null;
+                runCoinScan().catch(() => {});
             }
         }
     }
@@ -456,57 +486,65 @@ async function engineTick() {
 
 setInterval(async () => {
     if (MONITOR.tradeLock) return; MONITOR.tradeLock = true;
-    const hadPos = !!MONITOR.position; try { await engineTick(); if (hadPos && !MONITOR.position && MONITOR.active) runCoinScan(); } catch (e) {} finally { MONITOR.tradeLock = false; }
+    try { await engineTick(); } catch (e) {} finally { MONITOR.tradeLock = false; }
 }, 5000);
 
 setInterval(() => { if (MONITOR.active && !MONITOR.position) runCoinScan(); }, 10 * 60 * 1000);
 
 app.get('/status', (req, res) => res.json(MONITOR));
 
-// NOVO: Endpoint para fechar posição manualmente pelo app
-app.post('/close-position', async (req, res) => {
-    try {
-        if (!MONITOR.position) {
-            return res.json({ success: false, error: 'Nenhuma posição aberta' });
-        }
-
-        const pos = MONITOR.position;
-        const isL = pos.side === 'long';
-        const price = MONITOR.indicators.price || pos.entry;
-
-        // Fecha a posição na Bybit
-        const success = await placeOrder(isL ? 'short' : 'long', pos.qty, true);
-
-        if (success) {
-            recordTrade(pos, price, 'manual_close');
-            MONITOR.position = null;
-            addLog('🏁 Posição fechada manualmente pelo app', 'info');
-            res.json({ success: true });
-        } else {
-            res.json({ success: false, error: 'Falha ao fechar posição na Bybit' });
-        }
-    } catch (e) {
-        addLog('Erro ao fechar posição: ' + e.message, 'err');
-        res.json({ success: false, error: e.message });
-    }
-});
-
 app.post('/sync-par', (req, res) => {
     const { symbol, active, config, position } = req.body;
     if (active) {
-        MONITOR.active = true; if (symbol) MONITOR.symbol = symbol;
-        if (config) MONITOR.config = { ...MONITOR.config, ...config };
-        if (position) MONITOR.position = { ...position, lastAportePrice: position.entry, partialExitDone: false, partialCount: 0, entryTime: Date.now(), maxPartials: 2, initialQty: position.qty };
+        MONITOR.active = true; 
+        if (symbol) MONITOR.symbol = symbol;
+        if (config) {
+            // IMPORTANTE: o app (parHandoverToServer) envia os campos como
+            // `scoreMin`, `stopPct` e `volMin`/`volRatio` — não `entrySc`/`sl`.
+            // Aceita os dois formatos (novo primeiro, com fallback pro nome antigo)
+            // para nunca cair silenciosamente no valor padrão ignorando o que o
+            // usuário configurou na aba Par → Gatilho de Entrada / Configurar Par.
+            const scoreMinIn = (config.scoreMin !== undefined ? config.scoreMin : config.entrySc);
+            const stopPctIn  = (config.stopPct  !== undefined ? config.stopPct  : config.sl);
+            // O app tem 2 campos de volume ("Volume Ratio Mínimo" e "Volume Mínimo
+            // Absoluto"); o motor só usa 1 limiar (volRatio >= volMin), então usamos
+            // o mais restritivo (maior) dos dois configurados, garantindo que ambos
+            // os critérios definidos pelo usuário sejam respeitados.
+            const volCandidates = [config.volMin, config.volRatio].filter(v => v !== undefined && v !== null && !isNaN(v));
+            const volMinIn = volCandidates.length ? Math.max(...volCandidates) : undefined;
+
+            MONITOR.config = {
+                ...MONITOR.config,
+                emaScore: config.emaScore || 40,
+                vwapScore: config.vwapScore || 30,
+                oiScore: config.oiScore || 20,
+                scoreMin: (scoreMinIn !== undefined ? scoreMinIn : 70),
+                volMin: (volMinIn !== undefined ? volMinIn : 1.5),
+                stopPct: (stopPctIn !== undefined ? stopPctIn : 1.5),
+                trailAct: config.trailAct || 1.5,
+                trailPull: config.trailPull || 0.5,
+                lev: config.lev || 1,
+                bankPct: config.bankPct || 30,
+                partialInPct: config.partialInPct || 5,
+                partialOutPct: config.partialOutPct || 50
+            };
+            addLog(`⚙️ Config sincronizada: Score≥${MONITOR.config.scoreMin} Vol≥${MONITOR.config.volMin} SL${MONITOR.config.stopPct}% Trail+${MONITOR.config.trailAct}%/-${MONITOR.config.trailPull}% Lev${MONITOR.config.lev}x Banca${MONITOR.config.bankPct}%`, 'info');
+        }
+        if (position) {
+            MONITOR.position = { 
+                ...position, lastAportePrice: position.entry, partialExitDone: false, 
+                partialCount: 0, partialExitCount: 0, entryTime: Date.now(), maxPartials: 2, initialQty: position.qty 
+            };
+        }
+        // Roda o backtest do servidor com a MESMA lógica configurada acima. Se a moeda
+        // escolhida pelo app não for a mais eficiente encontrada, o servidor assume a
+        // que for melhor (ver runCoinScan). Se for a mesma, mantém.
         runCoinScan();
     } else {
-        // CORREÇÃO: Limpa completamente o estado ao desativar
-        MONITOR.active = false;
-        MONITOR.symbol = null;
-        MONITOR.position = null;
-        MONITOR.tradingPaused = false;
+        MONITOR.active = false; MONITOR.symbol = null; MONITOR.position = null;
         addLog('🛑 Servidor desativado pelo app', 'info');
     }
     res.json({ success: true });
 });
 
-app.listen(PORT, () => { console.log(`Scanner Pro v9.8 (ROI REAL + HISTÓRICO) na porta ${PORT}`); checkCredentials(); });
+app.listen(PORT, () => { console.log(`Scanner Pro v9.9 ativo na porta ${PORT}`); });
