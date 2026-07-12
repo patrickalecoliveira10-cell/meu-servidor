@@ -115,6 +115,24 @@ async function bybitRequest(method, endpoint, data = {}) {
 
 async function placeOrder(side, qty, isReduce = false) {
     if (!MONITOR.symbol) return null;
+    // CORREÇÃO: o app sempre sincroniza a alavancagem configurada na Bybit
+    // (via /v5/position/set-leverage) antes de abrir uma posição — o servidor
+    // não fazia isso, então a posição abria com a alavancagem que já estivesse
+    // configurada na conta/símbolo (às vezes bem maior que a do app). Como o
+    // ROI usado no stop/trailing é baseado na alavancagem real da posição
+    // (ver syncPositionWithBybit → curRoi), uma alavancagem real maior faz o
+    // ROI subir muito mais rápido por variação de preço, disparando o stop
+    // com um movimento de preço bem menor do que o configurado ("stop curtinho").
+    // Só faz sentido ajustar ao ABRIR posição nova (não em ordens de redução).
+    if (!isReduce) {
+        const lev = Math.max(1, parseInt(MONITOR.config.lev) || 1);
+        try {
+            await bybitRequest('POST', '/v5/position/set-leverage', {
+                category: 'linear', symbol: MONITOR.symbol,
+                buyLeverage: String(lev), sellLeverage: String(lev)
+            });
+        } catch (e) { /* ignora erro se a alavancagem já estiver correta */ }
+    }
     let finalQty = qty;
     const info = await bybitRequest('GET', '/v5/market/instruments-info', { category: 'linear', symbol: MONITOR.symbol });
     if (info?.result?.list?.[0]) {
