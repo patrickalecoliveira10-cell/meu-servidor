@@ -1,9 +1,15 @@
 // ╔══════════════════════════════════════════════════════════════════════╗
-// ║   BYBIT SCANNER PRO — SERVER v9.9 (LÓGICA DE OPERAÇÃO CORRIGIDA)      ║
-// ║   Correções: Segurança/Aportes só antes do trailing, Saídas parciais  ║
-// ║   em 2 etapas após o trailing, Backtest com a mesma lógica do robô,   ║
-// ║   Scanner sempre adota a moeda mais eficiente (sem piso de WR),       ║
-// ║   Re-scan automático toda vez que uma posição é fechada.              ║
+// ║   BYBIT SCANNER PRO — SERVER v10.0 (BACKTEST ALINHADO COM O APP)      ║
+// ║   Correções: Backtest do servidor agora usa EXATAMENTE a mesma janela ║
+// ║   de candles (300, 1m), o mesmo passo de simulação (candle a candle), ║
+// ║   a mesma janela de scoring (histórico completo, sem recorte de 250   ║
+// ║   candles), a mesma duração de simulação (sem teto de 60 candles) e a ║
+// ║   mesma classificação de vitória/derrota (timeout também é derrota)   ║
+// ║   usadas pelo backtest do app. Corrigido também o handover para a     ║
+// ║   nuvem: o gatilho já disparado no app agora é avaliado e executado   ║
+// ║   imediatamente ao assumir o monitoramento, antes do re-scan de       ║
+// ║   moeda mais eficiente (que antes podia trocar a moeda e descartar o  ║
+// ║   sinal que já estava válido no momento da entrega).                  ║
 // ╚══════════════════════════════════════════════════════════════════════╝
 
 const express = require('express');
@@ -227,20 +233,23 @@ async function engineScoring() {
     return MONITOR.indicators;
 }
 
-// ─── Backtest Logic ───────────────────────────────────────────────────────────
+// ─── Backtest Logic (ALINHADO COM O BACKTEST DO APP) ──────────────────────────
+// O app (parServerBacktest / serverEngineScoring / serverSimulatePosition) faz:
+//  - Busca exatamente 300 candles de 1 minuto (parGetCandles(sym,'1',300)).
+//  - Roda o scoring em CADA candle (passo 1), sempre com o histórico completo
+//    desde o candle 0 até o índice atual (sem recorte de janela).
+//  - Simula a posição até o FIM do array de candles (sem teto de velas), usando
+//    ROI bruto (sem desconto de taxa) para a saída de segurança.
+//  - Classifica como DERROTA tanto 'stop' quanto 'timeout' (só o resto é vitória).
+// O backtest do servidor abaixo foi reescrito para reproduzir exatamente esse
+// comportamento, para que o WR calculado pelo servidor bata com o do app.
 
 async function fetchDayCandles(symbol) {
-    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    let all = [], endTime = Date.now();
-    for (let page = 0; page < 3; page++) {
-        const kRes = await bybitRequest('GET', '/v5/market/kline', { category: 'linear', symbol, interval: '1', end: String(endTime), limit: '1000' });
-        if (!kRes?.result?.list?.length) break;
-        all = all.concat(kRes.result.list);
-        const oldestTs = parseFloat(kRes.result.list[kRes.result.list.length - 1][0]);
-        if (oldestTs <= oneDayAgo) break;
-        endTime = oldestTs - 1;
-    }
-    return all.reverse().map(k => ({ time: parseFloat(k[0]), close: parseFloat(k[4]), vol: parseFloat(k[5]), high: parseFloat(k[2]), low: parseFloat(k[3]) }));
+    // Mesma fonte de dados usada pelo app no backtest: 300 candles de 1 minuto,
+    // do mais recente ao mais antigo, reordenados para ordem crescente de tempo.
+    const kRes = await bybitRequest('GET', '/v5/market/kline', { category: 'linear', symbol, interval: '1', limit: '300' });
+    if (!kRes?.result?.list?.length) return [];
+    return [...kRes.result.list].reverse().map(k => ({ time: parseFloat(k[0]), close: parseFloat(k[4]), vol: parseFloat(k[5]), high: parseFloat(k[2]), low: parseFloat(k[3]) }));
 }
 
 function btScoring(candles, config) {
@@ -274,32 +283,37 @@ function btScoring(candles, config) {
 }
 
 // Reaproveita btScoring (sem alterá-la) para calcular o score em QUALQUER índice
-// do array de candles, usando uma janela final de até 250 velas (suficiente para
-// estabilizar a EMA200) terminando naquele índice. Necessário para simular, vela
-// a vela, a mesma lógica de gatilho contrário/favorável usada ao vivo pelo engineTick.
+// do array de candles. IMPORTANTE: usa o histórico COMPLETO desde o candle 0 até
+// o índice, exatamente como o app faz em serverEngineScoring(candles.slice(0,i+1)).
+// Um recorte de janela (ex.: últimos 250 candles) muda a semente da EMA200 e
+// produz scores diferentes dos calculados pelo app — foi essa a causa raiz do
+// backtest do servidor divergir do backtest do app.
 function btScoringAt(candles, idx, config) {
     if (idx < 200) return null;
-    const start = Math.max(0, idx - 250);
-    return btScoring(candles.slice(start, idx + 1), config);
+    return btScoring(candles.slice(0, idx + 1), config);
 }
 
-// Simula a posição usando EXATAMENTE a mesma lógica do engineTick:
+// Simula a posição usando EXATAMENTE a mesma lógica do backtest do app
+// (serverSimulatePosition):
 //  - Stop loss tem prioridade máxima.
-//  - Antes do trailing ativar: gatilho contrário + ROI positivo fecha tudo (segurança).
-//  - Antes do trailing ativar: gatilho a favor + ROI positivo faria aporte (não altera
-//    a classificação de resultado do backtest, que é só win/loss).
+//  - Antes do trailing ativar: gatilho contrário + ROI BRUTO (sem desconto de
+//    taxa) positivo fecha tudo (segurança) — o app não desconta taxa aqui.
+//  - Antes do trailing ativar: gatilho a favor + ROI positivo faria aporte (não
+//    altera a classificação de resultado do backtest, que é só win/loss).
 //  - Depois do trailing ativar: recuo (pull) atingido fecha tudo (trailing stop).
 //  - Depois do trailing ativar e recuo não atingido: gatilho contrário fecha 50%,
 //    se repetir fecha o restante (100%).
+//  - Simulação roda até o FIM do array de candles (sem teto de velas), igual ao app.
 function btSimulatePosition(candles, entryIdx, side, config) {
     const entry = candles[entryIdx].close;
     const isL = side === 'long';
     let pos = { peak: entry, trailActive: false, partialExitCount: 0 };
+    let lastRoi = 0;
 
-    const maxStep = Math.min(entryIdx + 60, candles.length); // janela de simulação (60 velas ~ suficiente)
-    for (let i = entryIdx + 1; i < maxStep; i++) {
+    for (let i = entryIdx + 1; i < candles.length; i++) {
         const price = candles[i].close;
         const roi = (isL ? (price - entry) / entry : (entry - price) / entry) * 100 * config.lev;
+        lastRoi = roi;
 
         // Stop loss — prioridade máxima
         if (roi <= -config.stopPct) return { result: 'stop', roi: -config.stopPct };
@@ -312,11 +326,10 @@ function btSimulatePosition(candles, entryIdx, side, config) {
         const contrary = !bothTrig && (isL ? sTrig : lTrig);
 
         if (!pos.trailActive) {
-            // Segurança: positiva + contrário + trailing ainda não ativo → fecha tudo
-            // "Positiva" aqui é líquida da taxa de entrada+saída (round-trip),
-            // não o ROI bruto — evita contar como "segura" uma posição que na
-            // prática fecharia no zero a zero ou no prejuízo por causa da taxa.
-            if (contrary && netRoi(roi, config.lev) >= 0) return { result: 'safety', roi };
+            // Segurança: positiva + contrário + trailing ainda não ativo → fecha tudo.
+            // Usa ROI bruto (igual ao app), não o líquido de taxa — o app não desconta
+            // taxa nessa checagem, então para o backtest bater precisamos fazer o mesmo.
+            if (contrary && roi >= 0) return { result: 'safety', roi };
             // Ativação do trailing
             if (roi >= config.trailAct) { pos.trailActive = true; pos.peak = price; }
             continue;
@@ -337,7 +350,7 @@ function btSimulatePosition(candles, entryIdx, side, config) {
             // primeira parcial (50%): posição continua aberta com o restante
         }
     }
-    return { result: 'timeout', roi: 0 };
+    return { result: 'timeout', roi: lastRoi };
 }
 
 async function runCoinScan() {
@@ -348,7 +361,7 @@ async function runCoinScan() {
     const originalSymbol = MONITOR.symbol;
     try {
         const c = MONITOR.config;
-        addLog(`🔍 Scanner: iniciando backtest do último dia — Gatilho EMA${c.emaScore}+VWAP${c.vwapScore}+OI${c.oiScore} | Score≥${c.scoreMin} Vol≥${c.volMin} | SL${c.stopPct}% Trail+${c.trailAct}%/-${c.trailPull}% | Lev${c.lev}x Banca${c.bankPct}% | moeda atual: ${originalSymbol || '—'}`, 'info');
+        addLog(`🔍 Scanner: iniciando backtest (300 candles de 1m, igual ao app) — Gatilho EMA${c.emaScore}+VWAP${c.vwapScore}+OI${c.oiScore} | Score≥${c.scoreMin} Vol≥${c.volMin} | SL${c.stopPct}% Trail+${c.trailAct}%/-${c.trailPull}% | Lev${c.lev}x Banca${c.bankPct}% | moeda atual: ${originalSymbol || '—'}`, 'info');
 
         const tickRes = await bybitRequest('GET', '/v5/market/tickers', { category: 'linear' });
         const movers = (tickRes?.result?.list || [])
@@ -360,9 +373,9 @@ async function runCoinScan() {
         const results = [];
         for (const sym of movers) {
             const candles = await fetchDayCandles(sym);
-            if (candles.length < 220) { addLog(`⏭️ Scanner: ${sym} sem candles suficientes do último dia — pulado`, 'info'); continue; }
+            if (candles.length < 200) { addLog(`⏭️ Scanner: ${sym} sem candles suficientes — pulado`, 'info'); continue; }
             let wins = 0, total = 0, maxScoreSeen = 0, maxVolRatioSeen = 0, samples = 0;
-            for (let i = 200; i < candles.length - 20; i += 5) {
+            for (let i = 200; i < candles.length - 20; i++) {
                 const sc = btScoring(candles.slice(0, i + 1), MONITOR.config);
                 samples++;
                 const topScore = Math.max(sc.scoreL, sc.scoreS);
@@ -374,7 +387,9 @@ async function runCoinScan() {
                 if (lTrig && sTrig) continue;
                 if (lTrig || sTrig) {
                     const res = btSimulatePosition(candles, i, lTrig ? 'long' : 'short', MONITOR.config);
-                    total++; if (res.result !== 'stop') wins++;
+                    total++;
+                    // Igual ao backtest do app: 'stop' e 'timeout' são derrota, o resto é vitória.
+                    if (res.result !== 'stop' && res.result !== 'timeout') wins++;
                 }
             }
             if (total > 0) {
@@ -382,7 +397,7 @@ async function runCoinScan() {
                 results.push({ symbol: sym, wr, n: total });
                 addLog(`📊 Scanner: ${sym} → WR ${(wr*100).toFixed(1)}% (${total} trades simulados com o gatilho/lógica configurados)`, 'info');
             } else {
-                addLog(`⚪ Scanner: ${sym} — nenhum gatilho válido no último dia (melhor score visto: ${maxScoreSeen.toFixed(0)}/${MONITOR.config.scoreMin} exigido | melhor volRatio: ${maxVolRatioSeen.toFixed(2)}x/${MONITOR.config.volMin}x exigido | ${samples} amostras)`, 'info');
+                addLog(`⚪ Scanner: ${sym} — nenhum gatilho válido no período (melhor score visto: ${maxScoreSeen.toFixed(0)}/${MONITOR.config.scoreMin} exigido | melhor volRatio: ${maxVolRatioSeen.toFixed(2)}x/${MONITOR.config.volMin}x exigido | ${samples} amostras)`, 'info');
             }
         }
         results.sort((a, b) => b.wr - a.wr);
@@ -392,7 +407,7 @@ async function runCoinScan() {
         if (results.length > 0) {
             const best = results[0];
             MONITOR.coinScan.bestSymbol = best.symbol; MONITOR.coinScan.bestWr = best.wr;
-            addLog(`🏆 Scanner: moeda mais eficiente do último dia → ${best.symbol} (WR ${(best.wr*100).toFixed(1)}% em ${best.n} trades)`, 'ok');
+            addLog(`🏆 Scanner: moeda mais eficiente → ${best.symbol} (WR ${(best.wr*100).toFixed(1)}% em ${best.n} trades)`, 'ok');
 
             if (!MONITOR.position) {
                 if (originalSymbol === best.symbol) {
@@ -406,7 +421,7 @@ async function runCoinScan() {
                 addLog(`⏸️ Scanner: posição aberta em ${MONITOR.symbol} — resultado registrado, troca de moeda só ocorre com a posição fechada.`, 'info');
             }
         } else {
-            addLog(`⚠️ Scanner: nenhum par com gatilho válido no último dia — mantendo ${originalSymbol || 'nenhuma moeda'} até o próximo escaneamento.`, 'warn');
+            addLog(`⚠️ Scanner: nenhum par com gatilho válido — mantendo ${originalSymbol || 'nenhuma moeda'} até o próximo escaneamento.`, 'warn');
         }
     } finally { MONITOR.coinScan.running = false; }
 }
@@ -551,7 +566,7 @@ setInterval(() => { if (MONITOR.active && !MONITOR.position) runCoinScan(); }, 1
 
 app.get('/status', (req, res) => res.json(MONITOR));
 
-app.post('/sync-par', (req, res) => {
+app.post('/sync-par', async (req, res) => {
     const { symbol, active, config, position } = req.body;
     if (active) {
         MONITOR.active = true; 
@@ -594,9 +609,25 @@ app.post('/sync-par', (req, res) => {
                 partialCount: 0, partialExitCount: 0, entryTime: Date.now(), maxPartials: 2, initialQty: position.qty 
             };
         }
+
+        // CORREÇÃO: se o gatilho já estava válido no app no exato momento da entrega
+        // (o app detectou o sinal mas ainda não tinha posição aberta), o servidor
+        // precisa avaliar e executar essa entrada IMEDIATAMENTE — antes de rodar o
+        // runCoinScan abaixo. Antes desta correção, o runCoinScan rodava primeiro e,
+        // como nenhuma posição existia ainda, podia trocar MONITOR.symbol para outra
+        // moeda "mais eficiente" no backtest de 300 candles, descartando o sinal que
+        // já era válido na moeda escolhida pelo usuário — e a entrada nunca acontecia,
+        // pois o próximo tick do motor (5s depois) já avaliava outra moeda do zero.
+        if (!MONITOR.position && !MONITOR.tradeLock) {
+            MONITOR.tradeLock = true;
+            try { await engineTick(); } catch (e) {} finally { MONITOR.tradeLock = false; }
+        }
+
         // Roda o backtest do servidor com a MESMA lógica configurada acima. Se a moeda
         // escolhida pelo app não for a mais eficiente encontrada, o servidor assume a
-        // que for melhor (ver runCoinScan). Se for a mesma, mantém.
+        // que for melhor (ver runCoinScan). Se for a mesma, mantém. Se a entrada
+        // imediata acima já abriu posição, o runCoinScan não troca mais de moeda
+        // (ver guarda `if (!MONITOR.position)` dentro dele).
         runCoinScan();
     } else {
         MONITOR.active = false; MONITOR.symbol = null; MONITOR.position = null;
@@ -605,4 +636,4 @@ app.post('/sync-par', (req, res) => {
     res.json({ success: true });
 });
 
-app.listen(PORT, () => { console.log(`Scanner Pro v9.9 ativo na porta ${PORT}`); });
+app.listen(PORT, () => { console.log(`Scanner Pro v10.0 ativo na porta ${PORT}`); });
