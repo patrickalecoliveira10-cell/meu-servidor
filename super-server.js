@@ -1,24 +1,35 @@
 require('dotenv').config();
-process.env.UNIFIED_MODE = 'true'; // Ativa comunicação interna via localhost
+process.env.UNIFIED_MODE = 'true';
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const compression = require('compression');
 const path = require('path');
+const fs = require('fs');
 
-// Configurações de logs e DB (usando os do AI-Brain como base central)
+// Configurações de logs e DB
 const logger = require('./ai-brain/src/logs/logger');
 const db = require('./ai-brain/src/database/connection');
 
-// Importação dos Núcleos com caminhos seguros e log de depuração
-console.log('Verificando caminhos de módulos...');
-const brainPath = path.join(__dirname, 'ai-brain', 'src', 'ai', 'brain');
-const executorPath = path.join(__dirname, 'executor', 'src', 'services', 'executor');
-const scannerPath = path.join(__dirname, 'scanner', 'src', 'scanner', 'marketScanner');
+// Função de carregamento seguro para evitar MODULE_NOT_FOUND no Render
+function safeRequire(modulePath) {
+    const fullPath = path.resolve(__dirname, modulePath);
+    if (!fs.existsSync(fullPath) && !fs.existsSync(fullPath + '.js')) {
+        console.error(`[CRITICAL] Module not found at: ${fullPath}`);
+        // Tenta listar o diretório para debug
+        const dir = path.dirname(fullPath);
+        if (fs.existsSync(dir)) {
+            console.log(`Directory listing for ${dir}:`, fs.readdirSync(dir));
+        }
+        throw new Error(`Cannot find module: ${fullPath}`);
+    }
+    return require(fullPath);
+}
 
-const Brain = require(brainPath);
-const executorService = require(executorPath);
-const marketScanner = require(scannerPath);
+console.log('--- INICIALIZANDO NÚCLEOS UNIFICADOS ---');
+const Brain = safeRequire('./ai-brain/src/ai/brain.js');
+const executorService = safeRequire('./executor/src/services/executor.js');
+const marketScanner = safeRequire('./scanner/src/scanner/marketScanner.js');
 
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -26,20 +37,19 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 
-// Definição das Rotas e Controllers
+// Importação das Rotas
 const brainRoutes = require('./ai-brain/src/routes/index');
 const executorRoutes = require('./executor/src/routes/index');
 const scannerRoutes = require('./scanner/src/routes/scanner');
 const scannerController = require('./scanner/src/controllers/scannerController');
 
-// 1. Compatibilidade Direta com App Android (Prioridade Máxima)
+// Endpoints de compatibilidade Android
 app.get('/api/status', (req, res) => scannerController.getStatus(req, res));
 app.get('/api/results', (req, res) => scannerController.getResults(req, res));
 
-// 2. Rotas Unificadas dos Serviços
-app.use('/api', brainRoutes); // Rotas da IA
-app.use('/api/executor', executorRoutes); // Rotas do Executor
-app.use('/api/scanner', scannerRoutes); // Rotas do Scanner
+app.use('/api', brainRoutes);
+app.use('/api/executor', executorRoutes);
+app.use('/api/scanner', scannerRoutes);
 
 app.get('/', (req, res) => res.json({
     service: 'Unified Trading System V2',
@@ -49,45 +59,22 @@ app.get('/', (req, res) => res.json({
     executor: executorService.getStatus().isRunning ? 'active' : 'idle'
 }));
 
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'OK',
-        brain: Brain.getStatus(),
-        executor: executorService.getStatus(),
-        scanner: marketScanner.getStatus()
-    });
-});
-
 async function start() {
     try {
         logger.info('--- SISTEMA UNIFICADO: INICIANDO ---');
-
-        // 1. Conexão com o Banco
         await db.testConnection();
-
-        // 2. Inicializar Cérebro (IA)
         await Brain.initialize();
-
-        // 3. Inicializar Executor (Bybit)
         await executorService.initialize();
         await executorService.start();
 
-        // 4. Inicializar Scanner
-        logger.info('Iniciando Market Scanner...');
         setTimeout(() => {
-          marketScanner.start().then(() => {
-            logger.info('Market Scanner started successfully in unified mode');
-          }).catch(error => {
-            logger.error('Failed to auto-start scanner in unified mode:', error);
-          });
+          marketScanner.start().catch(err => logger.error('Scanner start error:', err));
         }, 5000);
 
-        const PORT = process.env.PORT || 10000; // Porta padrão do Render
+        const PORT = process.env.PORT || 10000;
         app.listen(PORT, () => {
             logger.info(`SISTEMA UNIFICADO rodando na porta ${PORT}`);
-            logger.info('Scanner, Brain e Executor operando no mesmo processo.');
         });
-
     } catch (err) {
         console.error('ERRO CRÍTICO NO STARTUP:', err);
         process.exit(1);
