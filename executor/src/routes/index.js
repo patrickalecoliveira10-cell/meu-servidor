@@ -47,7 +47,7 @@ router.get('/positions', async (req, res) => {
     const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
 
     const mappedOperations = activePositions.map(p => ({
-      id: p.symbol + p.updatedTime,
+      id: p.symbol, // ID ESTÁVEL: Apenas o símbolo
       symbol: p.symbol,
       side: p.side,
       entryPrice: parseFloat(p.avgPrice || 0),
