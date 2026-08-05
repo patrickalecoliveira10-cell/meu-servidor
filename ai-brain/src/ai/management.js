@@ -87,8 +87,15 @@ class Management {
           reason = `Emergency Hard Stop triggered at ${profitPct.toFixed(2)}% to protect capital.`;
       }
 
-      // LOG DE MONITORAMENTO (Para você saber que o sistema está vigiando)
+      // LOG DE MONITORAMENTO E EXPLICAÇÃO PARA O APP
       if (decision === 'hold') {
+          if (profitPct < 0 && profitPct > -0.5) {
+              reason = "Posição levemente negativa, mas dentro da oscilação normal. Indicadores ainda sugerem força, mantendo para recuperação.";
+          } else if (profitPct <= -0.5) {
+              reason = `Atenção: ROI em ${profitPct.toFixed(2)}%. Reanalisando probabilidade de recuperação... Status: SAFE por enquanto.`;
+          } else {
+              reason = "Posição em lucro. Aguardando alvos de saída parcial ou ativação de trailing stop.";
+          }
           logger.info(`[MANAGEMENT] Monitoring ${coin_id}: ROI ${profitPct.toFixed(2)}% | Status: SAFE`);
       }
 
@@ -97,7 +104,8 @@ class Management {
         coin_id,
         decision,
         params,
-        reason,
+        reason, // Agora enviamos a explicação humana
+        profit_pct: profitPct,
         timestamp: new Date()
       };
 
