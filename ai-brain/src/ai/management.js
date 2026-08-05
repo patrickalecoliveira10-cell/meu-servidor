@@ -63,7 +63,7 @@ class Management {
       }
 
       // 4. SAÍDA ANTECIPADA (STOP PREVENTIVO) - MAIS AGRESSIVO
-      if (profitPct < -1.5) { // Começa a monitorar a partir de -1.5%
+      if (profitPct < -0.5) { // Começa a monitorar cedo, a partir de -0.5%
         const reAnalysis = await Intelligence.analyze({
             coin_id: operation.coin_id,
             indicators: indicators,
@@ -73,11 +73,23 @@ class Management {
 
         logger.info(`[MANAGEMENT] ${coin_id} Re-analysis: WinProb ${(reAnalysis.win_probability * 100).toFixed(1)}% | Current ROI: ${profitPct.toFixed(2)}%`);
 
-        // Se a probabilidade de vitória cair abaixo de 48%, fecha preventivamente
-        if (reAnalysis.win_probability < 0.48) {
+        // Se a probabilidade de vitória cair abaixo de 50%, fecha preventivamente
+        if (reAnalysis.win_probability < 0.50) {
             decision = 'close';
-            reason = `Preventive Stop: ROI ${profitPct.toFixed(2)}% and Weakening Trend (${(reAnalysis.win_probability * 100).toFixed(1)}% prob).`;
+            reason = `High Risk detected: ROI ${profitPct.toFixed(2)}% and Recovery Prob below 50% (${(reAnalysis.win_probability * 100).toFixed(1)}%).`;
         }
+      }
+
+      // 5. STOP LOSS DE EMERGÊNCIA (Hard Stop)
+      // Se cair abaixo de -3.5%, fecha independente da análise da IA para evitar liquidação
+      if (profitPct < -3.5) {
+          decision = 'close';
+          reason = `Emergency Hard Stop triggered at ${profitPct.toFixed(2)}% to protect capital.`;
+      }
+
+      // LOG DE MONITORAMENTO (Para você saber que o sistema está vigiando)
+      if (decision === 'hold') {
+          logger.info(`[MANAGEMENT] Monitoring ${coin_id}: ROI ${profitPct.toFixed(2)}% | Status: SAFE`);
       }
 
       const managementDecision = {
