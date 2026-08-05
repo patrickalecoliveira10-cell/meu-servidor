@@ -27,7 +27,14 @@ function safeRequire(modulePath) {
 }
 
 console.log('--- INICIALIZANDO NÚCLEOS UNIFICADOS ---');
-const Brain = safeRequire('./ai-brain/src/ai/brain.js');
+// Tenta carregar brain.js ou brains.js para compatibilidade entre Local e Render
+let Brain;
+try {
+    Brain = safeRequire('./ai-brain/src/ai/brain.js');
+} catch (e) {
+    logger.warn('brain.js not found, trying brains.js...');
+    Brain = safeRequire('./ai-brain/src/ai/brains.js');
+}
 const executorService = safeRequire('./executor/src/services/executor.js');
 const marketScanner = safeRequire('./scanner/src/scanner/marketScanner.js');
 
