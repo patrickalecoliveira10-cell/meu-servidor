@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const executorService = require('../services/executor');
-const logger = require('../logger');
+const logger = require('../logs/logger.js');
 
 // Função auxiliar para garantir que o Android receba exatamente o que espera
 const sendResponse = (res, success, data = null, message = null, statusCode = 200) => {
@@ -74,6 +74,34 @@ router.post('/control', (req, res) => {
     
     sendResponse(res, true, null, `Executor ${action} successful`);
   } catch (error) {
+    sendResponse(res, false, null, error.message, 500);
+  }
+});
+
+// NOVO: Receber recomendações do AI Brain
+router.post('/recommendations', async (req, res) => {
+  try {
+    const decision = req.body;
+    logger.info(`Recommendation received for ${decision.coin_id}: ${decision.decision}`);
+
+    // Encaminha para o serviço de execução
+    const result = await executorService.processRecommendation(decision);
+
+    sendResponse(res, true, result, "Recommendation processed");
+  } catch (error) {
+    logger.error('Error processing recommendation:', error);
+    sendResponse(res, false, null, error.message, 500);
+  }
+});
+
+// NOVO: Receber sinais de gerenciamento (Trailing Stop, etc)
+router.post('/manage', async (req, res) => {
+  try {
+    const signal = req.body;
+    const result = await executorService.updatePositionManagement(signal);
+    sendResponse(res, true, result, "Management signal processed");
+  } catch (error) {
+    logger.error('Error processing management signal:', error);
     sendResponse(res, false, null, error.message, 500);
   }
 });
