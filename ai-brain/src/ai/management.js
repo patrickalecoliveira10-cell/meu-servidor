@@ -62,9 +62,8 @@ class Management {
         operation.p_exit_done = true;
       }
 
-      // 4. SAÍDA ANTECIPADA (STOP PREVENTIVO) - NOVO!
-      // Se o ROI estiver abaixo de -2% e a IA detectar que a tendência é de queda contínua
-      if (profitPct < -2.0) {
+      // 4. SAÍDA ANTECIPADA (STOP PREVENTIVO) - MAIS AGRESSIVO
+      if (profitPct < -1.5) { // Começa a monitorar a partir de -1.5%
         const reAnalysis = await Intelligence.analyze({
             coin_id: operation.coin_id,
             indicators: indicators,
@@ -72,9 +71,12 @@ class Management {
             timeframe: operation.timeframe || '15m'
         }, weights, config);
 
-        if (reAnalysis.win_probability < 0.45) {
+        logger.info(`[MANAGEMENT] ${coin_id} Re-analysis: WinProb ${(reAnalysis.win_probability * 100).toFixed(1)}% | Current ROI: ${profitPct.toFixed(2)}%`);
+
+        // Se a probabilidade de vitória cair abaixo de 48%, fecha preventivamente
+        if (reAnalysis.win_probability < 0.48) {
             decision = 'close';
-            reason = `Preventive Stop: ROI ${profitPct.toFixed(2)}% and Low Recovery Prob (${(reAnalysis.win_probability * 100).toFixed(1)}%).`;
+            reason = `Preventive Stop: ROI ${profitPct.toFixed(2)}% and Weakening Trend (${(reAnalysis.win_probability * 100).toFixed(1)}% prob).`;
         }
       }
 
