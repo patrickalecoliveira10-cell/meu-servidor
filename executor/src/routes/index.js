@@ -49,14 +49,15 @@ router.get('/positions', async (req, res) => {
     const mappedOperations = activePositions.map(p => ({
       id: p.symbol + p.updatedTime,
       symbol: p.symbol,
-      side: p.side, // "Buy" ou "Sell"
+      side: p.side,
       entryPrice: parseFloat(p.avgPrice || 0),
       currentPrice: parseFloat(p.markPrice || 0),
-      stopLoss: parseFloat(p.stopLoss || 0),
-      takeProfit: parseFloat(p.takeProfit || 0),
+      currentStop: parseFloat(p.stopLoss || 0),
+      currentTrailing: parseFloat(p.trailingStop || 0), // Pegando o trailing atual
       currentProfit: parseFloat(p.unrealisedPnl || 0),
       roi: p.positionValue > 0 ? (parseFloat(p.unrealisedPnl) / parseFloat(p.positionValue)) * 100 : 0,
       entryReason: "AI Signal Strength: " + (p.leverage || "1x"),
+      stayReason: executorService.lastReasons[p.symbol] || "IA monitorando tendências de mercado...", // Texto humano
       isOpen: true,
       timestamp: parseInt(p.createdTime || Date.now())
     }));
