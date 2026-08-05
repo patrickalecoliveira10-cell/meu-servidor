@@ -26,6 +26,12 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 
+// Definição das Rotas e Controllers
+const brainRoutes = require('./ai-brain/src/routes/index');
+const executorRoutes = require('./executor/src/routes/index');
+const scannerRoutes = require('./scanner/src/routes/scanner');
+const scannerController = require('./scanner/src/controllers/scannerController');
+
 // 1. Compatibilidade Direta com App Android (Prioridade Máxima)
 app.get('/api/status', (req, res) => scannerController.getStatus(req, res));
 app.get('/api/results', (req, res) => scannerController.getResults(req, res));
