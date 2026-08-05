@@ -10,10 +10,10 @@ const path = require('path');
 const logger = require('./ai-brain/src/logs/logger');
 const db = require('./ai-brain/src/database/connection');
 
-// Importação dos Serviços
-const Brain = require('./ai-brain/src/ai/brain');
-const executorService = require('./executor/src/services/executor');
-const marketScanner = require('./scanner/src/scanner/marketScanner');
+// Importação dos Núcleos com caminhos seguros
+const Brain = require(path.join(__dirname, 'ai-brain', 'src', 'ai', 'brain.js'));
+const executorService = require(path.join(__dirname, 'executor', 'src', 'services', 'executor.js'));
+const marketScanner = require(path.join(__dirname, 'scanner', 'src', 'scanner', 'marketScanner.js'));
 
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
