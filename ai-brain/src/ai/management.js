@@ -14,33 +14,47 @@ class Management {
 
   async reevaluate(operation, weights, config) {
     try {
-      const { coin_id, current_price, entry_price, stop_loss, take_profit, indicators } = operation;
+      const { coin_id, current_price, entry_price, indicators } = operation;
 
       logger.debug(`Reevaluating operation for ${coin_id} at ${current_price}`);
-
-      // 1. Calculate probabilities
-      const winProbability = 0.6; // Placeholder
-      const confidence = winProbability;
 
       let decision = 'hold';
       let reason = 'Market conditions stable';
       let params = {};
 
-      const atrValue = indicators.atr ? parseFloat(indicators.atr.value) : (current_price * 0.02);
-      const profit = operation.side === 'Buy' ? (current_price - entry_price) : (entry_price - current_price);
+      // CÁLCULOS DE PERFORMANCE
+      const profit = operation.side === 'Buy' || operation.side === 'Long'
+        ? (current_price - entry_price)
+        : (entry_price - current_price);
 
-      // 2. Trailing Stop Dinâmico (Ativa quando lucro > 1.2 ATR)
-      if (profit > (atrValue * 1.2) && !operation.ts_active) {
-        decision = 'activate_trailing';
-        params.trailing_stop = (atrValue * 0.7).toFixed(6);
-        reason = 'Profit > 1.2 ATR. Activating Native Trailing Stop.';
+      const profitPct = (profit / entry_price) * 100;
+      const atrValue = indicators.atr ? parseFloat(indicators.atr.value) : (current_price * 0.01);
+
+      // 1. PROTEÇÃO DE CAPITAL (BREAKEVEN)
+      // Se o lucro bater 0.8%, move o Stop para o preço de entrada (Garante taxa paga)
+      if (profitPct >= 0.8 && !operation.breakeven_done) {
+        decision = 'move_stop';
+        // Preço de entrada + 0.1% para cobrir taxas da exchange
+        params.new_stop = entry_price * (operation.side === 'Buy' || operation.side === 'Long' ? 1.001 : 0.999);
+        reason = `Profit ${profitPct.toFixed(2)}% reached. Moving Stop to Breakeven.`;
+        operation.breakeven_done = true;
       }
 
-      // 3. Parcial de Saída (50% no lucro de 2 ATR)
-      if (profit > (atrValue * 2.0) && !operation.p_exit_done) {
+      // 2. TRAILING STOP DINÂMICO (Ativação com 0.6 ATR)
+      // Mais sensível para moedas voláteis como HOME
+      if (profit > (atrValue * 0.6) && !operation.ts_active) {
+        decision = 'activate_trailing';
+        params.trailing_stop = (atrValue * 0.4).toFixed(6); // Distância curta para não devolver lucro
+        reason = 'Profit > 0.6 ATR. Activating Sensitive Trailing Stop.';
+        operation.ts_active = true;
+      }
+
+      // 3. SAÍDA PARCIAL (Alvo curto de 1.2 ATR)
+      if (profit > (atrValue * 1.2) && !operation.p_exit_done) {
         decision = 'partial_exit';
         params.percent = 0.5;
-        reason = 'Target 1 reached (2 ATR). Closing 50%.';
+        reason = 'Target 1 reached (1.2 ATR). Closing 50% to secure profit.';
+        operation.p_exit_done = true;
       }
 
       const managementDecision = {
@@ -53,12 +67,8 @@ class Management {
       };
 
       if (decision !== 'hold') {
-        logger.info(`[MANAGEMENT] Decision for ${coin_id}: ${decision}`);
+        logger.info(`[MANAGEMENT] ${coin_id}: ${reason}`);
         await apiClient.sendManagementSignal(managementDecision);
-
-        // Atualizar flags locais para evitar re-execução
-        if (decision === 'partial_exit') operation.p_exit_done = true;
-        if (decision === 'activate_trailing') operation.ts_active = true;
       }
 
       return managementDecision;
@@ -68,6 +78,5 @@ class Management {
     }
   }
 }
-
 
 module.exports = new Management();
