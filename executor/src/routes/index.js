@@ -41,9 +41,12 @@ router.get('/status', (req, res) => {
 router.get('/positions', async (req, res) => {
   try {
     const bybitService = require('../services/bybit');
-    const positions = await bybitService.getPosition() || [];
+    const allPositions = await bybitService.getPosition() || [];
     
-    const mappedOperations = positions.map(p => ({
+    // Filtrar apenas posições reais (tamanho > 0)
+    const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
+
+    const mappedOperations = activePositions.map(p => ({
       id: p.symbol + p.updatedTime,
       symbol: p.symbol,
       side: p.side, // "Buy" ou "Sell"
