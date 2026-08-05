@@ -32,7 +32,11 @@ class Management {
 
       // 1. PROTEÇÃO DE CAPITAL (BREAKEVEN)
       // Se o lucro bater 0.8%, move o Stop para o preço de entrada (Garante taxa paga)
-      if (profitPct >= 0.8 && !operation.breakeven_done) {
+      const isBreakevenAlreadySet = operation.side === 'Buy'
+        ? (operation.stopLoss >= entry_price)
+        : (operation.stopLoss <= entry_price && operation.stopLoss > 0);
+
+      if (profitPct >= 0.8 && !isBreakevenAlreadySet) {
         decision = 'move_stop';
         // Preço de entrada + 0.1% para cobrir taxas da exchange
         params.new_stop = entry_price * (operation.side === 'Buy' || operation.side === 'Long' ? 1.001 : 0.999);
