@@ -9,6 +9,7 @@ const executorService = {
   isPaused: false,
   emergencyMode: false,
   monitoringInterval: null,
+  lastReasons: {}, // Armazena os motivos das decisões por moeda
 
   async initialize() {
     try {
@@ -205,7 +206,10 @@ const executorService = {
 
       logger.info(`[MANAGEMENT] Signal received for ${coin_id}: ${decision}`);
 
-      const positions = await bybitService.getPosition(coin_id);
+      // Salva o motivo para o Android ler
+      if (signal.reason) {
+          this.lastReasons[coin_id] = signal.reason;
+      }
       // Filtra posições realmente abertas (size > 0)
       const activePos = positions.find(p => p.symbol === coin_id && parseFloat(p.size || 0) > 0);
 
