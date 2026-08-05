@@ -1,6 +1,6 @@
 const path = require('path');
 const logger = require(path.join(__dirname, '../logs/logger.js'));
-const Brain = require(path.join(__dirname, '../ai/brain.js'));
+const Brain = require(path.join(__dirname, '../ai/brains.js'));
 const queries = require(path.join(__dirname, '../database/queries.js'));
 const config = require(path.join(__dirname, '../config/index.js'));
 
