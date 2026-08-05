@@ -46,7 +46,11 @@ router.get('/positions', async (req, res) => {
     const mappedOperations = positions.map(p => ({
       id: p.symbol + p.updatedTime,
       symbol: p.symbol,
+      side: p.side, // "Buy" ou "Sell"
       entryPrice: parseFloat(p.avgPrice || 0),
+      currentPrice: parseFloat(p.markPrice || 0),
+      stopLoss: parseFloat(p.stopLoss || 0),
+      takeProfit: parseFloat(p.takeProfit || 0),
       currentProfit: parseFloat(p.unrealisedPnl || 0),
       roi: p.positionValue > 0 ? (parseFloat(p.unrealisedPnl) / parseFloat(p.positionValue)) * 100 : 0,
       entryReason: "AI Signal Strength: " + (p.leverage || "1x"),
@@ -94,7 +98,7 @@ router.post('/recommendations', async (req, res) => {
   }
 });
 
-// NOVO: Receber sinais de gerenciamento (Trailing Stop, etc)
+// POST /manage - Receber sinais de gerenciamento (AI)
 router.post('/manage', async (req, res) => {
   try {
     const signal = req.body;
@@ -102,6 +106,25 @@ router.post('/manage', async (req, res) => {
     sendResponse(res, true, result, "Management signal processed");
   } catch (error) {
     logger.error('Error processing management signal:', error);
+    sendResponse(res, false, null, error.message, 500);
+  }
+});
+
+// NOVO: Fechamento Manual pelo App Android
+router.post('/close', async (req, res) => {
+  try {
+    const { symbol } = req.body;
+    if (!symbol) return sendResponse(res, false, null, "Symbol is required", 400);
+
+    logger.info(`[MANUAL_CLOSE] Solicitado fechamento para ${symbol}`);
+    const result = await executorService.updatePositionManagement({
+      coin_id: symbol,
+      decision: 'close'
+    });
+
+    sendResponse(res, true, result, `Position ${symbol} closed successfully`);
+  } catch (error) {
+    logger.error(`Error closing position ${req.body.symbol}:`, error);
     sendResponse(res, false, null, error.message, 500);
   }
 });
