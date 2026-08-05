@@ -1,10 +1,11 @@
-{"name": "vision-trader-unified",
+{
+  "name": "vision-trader-unified",
   "version": "1.0.0",
   "description": "Unified Trading System (Scanner + Brain + Executor)",
   "main": "super-server.js",
   "scripts": {
     "start": "node super-server.js",
-    "install-all": "npm install && cd ai-brain && npm install && cd ../executor && npm install && cd ../scanner && npm install"
+    "build": "npm install && cd ai-brain && npm install && cd ../executor && npm install && cd ../scanner && npm install"
   },
   "dependencies": {
     "express": "^4.18.2",
