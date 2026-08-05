@@ -1,7 +1,7 @@
 const bybitService = require('./bybit');
 const db = require('../database/connection');
 const config = require('../config');
-const logger = require('../logger.js');
+const logger = require('../logs/logger.js');
 const axios = require('axios');
 
 const executorService = {
