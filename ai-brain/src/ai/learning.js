@@ -166,8 +166,19 @@ class Learning {
       for (const [name, data] of Object.entries(indicators)) {
         const signal = data.signal || 0;
         if (signal !== 0) {
-          // Se o sinal do indicador ajudou no resultado, aumenta o peso
-          const helped = (signal > 0 && success) || (signal < 0 && !success);
+          // Determina se o sinal foi na mesma direção do sucesso
+          // Se winProbability > 0.5 foi um BUY. Se < 0.5 foi um SELL.
+          const isBuy = decision_data.win_probability > 0.5;
+
+          let helped = false;
+          if (success) {
+            // No lucro: indicadores que apontaram na direção certa ajudaram
+            helped = (isBuy && signal > 0) || (!isBuy && signal < 0);
+          } else {
+            // No prejuízo: indicadores que apontaram na direção oposta ao erro "ajudaram" (tentaram evitar)
+            helped = (isBuy && signal < 0) || (!isBuy && signal > 0);
+          }
+
           await this.adjustWeights(name, helped, coin_id);
         }
       }
