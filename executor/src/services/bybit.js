@@ -1,7 +1,7 @@
 const axios = require('axios');
 const CryptoJS = require('crypto-js');
 const config = require('../config');
-const logger = require('../logger');
+const logger = require('../logger.js');
 
 class BybitService {
   constructor() {
