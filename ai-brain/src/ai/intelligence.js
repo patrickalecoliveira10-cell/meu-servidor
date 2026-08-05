@@ -112,7 +112,15 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis, config) {
-    const threshold = (config.confidence_threshold || 70) / 100;
+    // Se vier do DB, já está entre 0 e 1 (ex: 0.7).
+    // Se não existir ou for 0, usa 0.7 como default.
+    let threshold = config.confidence_threshold;
+
+    if (!threshold || threshold === 0) {
+      threshold = 0.7;
+    } else if (threshold > 1) {
+      threshold = threshold / 100; // Caso venha como 70 ao invés de 0.7
+    }
 
     // LOG DE DEBUG PARA VER O LIMIAR E A CONFIANÇA
     if (confidence > 0.4) {
