@@ -195,65 +195,57 @@ const executorService = {
 
   async updatePositionManagement(signal) {
     try {
-      const { coin_id, decision, params } = signal;
+      const coin_id = (signal.coin_id || signal.symbol || '').toUpperCase();
+      const { decision, params } = signal;
+
+      if (!coin_id) throw new Error('Symbol/Coin_id is required for management');
+
       logger.info(`[MANAGEMENT] Signal received for ${coin_id}: ${decision}`);
 
       const positions = await bybitService.getPosition(coin_id);
-      const activePos = positions.find(p => p.symbol === coin_id && parseFloat(p.size) > 0);
+      // Filtra posições realmente abertas (size > 0)
+      const activePos = positions.find(p => p.symbol === coin_id && parseFloat(p.size || 0) > 0);
 
       if (!activePos) {
-        logger.warn(`[EXECUTOR] Management signal ${decision} for ${coin_id} ignored: No active position.`);
+        logger.warn(`[EXECUTOR] Management signal ${decision} for ${coin_id} ignored: No active position found.`);
         return { status: 'ignored', reason: 'no_active_position' };
       }
 
       switch (decision) {
         case 'partial_exit':
-          const exitQty = (parseFloat(activePos.size) * params.percent).toString();
+          const exitQty = (parseFloat(activePos.size) * (params.percent || 0.5)).toString();
           const closeSide = activePos.side === 'Buy' ? 'Sell' : 'Buy';
-          logger.info(`[EXECUTOR] Executing partial exit for ${coin_id}: ${params.percent * 100}%`);
+          logger.info(`[EXECUTOR] Executing partial exit for ${coin_id}: ${exitQty} units`);
           await bybitService.placeOrder(coin_id, closeSide, 'Market', exitQty);
-
-          // Marcar parcial como feita no DB
-          try {
-            await db.query(
-              'UPDATE trading_ai.operations SET p_exit_done = TRUE WHERE symbol = $1 AND status = $2',
-              [coin_id, 'OPEN']
-            );
-          } catch (err) { logger.error('DB Update error (partial):', err.message); }
           break;
 
         case 'activate_trailing':
           logger.info(`[EXECUTOR] Activating Native Trailing Stop for ${coin_id}: Recoil ${params.trailing_stop}`);
           await bybitService.setTradingStop(coin_id, null, null, params.trailing_stop);
-
-          // Marcar trailing como ativo no DB
-          try {
-            await db.query(
-              'UPDATE trading_ai.operations SET ts_active = TRUE WHERE symbol = $1 AND status = $2',
-              [coin_id, 'OPEN']
-            );
-          } catch (err) { logger.error('DB Update error (trailing):', err.message); }
           break;
 
         case 'move_stop':
           logger.info(`[EXECUTOR] Moving Stop Loss for ${coin_id} to ${params.new_stop}`);
-          await bybitService.setTradingStop(coin_id, params.new_stop);
+          await bybitService.setTradingStop(coin_id, params.new_stop.toString());
           break;
 
         case 'close':
-          logger.info(`[EXECUTOR] Closing full position for ${coin_id}`);
+          logger.info(`[EXECUTOR] Closing FULL position for ${coin_id} (${activePos.size} units)`);
+          const fullCloseSide = activePos.side === 'Buy' ? 'Sell' : 'Buy';
           await bybitService.placeOrder(
             coin_id,
-            activePos.side === 'Buy' ? 'Sell' : 'Buy',
+            fullCloseSide,
             'Market',
             activePos.size
           );
 
-          // Fechar no DB
+          // Limpa ordens pendentes e stops ao fechar manual
+          await bybitService.cancelAllOrders(coin_id);
+
           try {
             await db.query(
-              'UPDATE trading_ai.operations SET status = $1, exit_price = $2, close_time = NOW() WHERE symbol = $3 AND status = $4',
-              ['CLOSED', activePos.markPrice || 0, coin_id, 'OPEN']
+              "UPDATE trading_ai.operations SET status = 'CLOSED', exit_price = $1, close_time = NOW() WHERE symbol = $2 AND status = 'OPEN'",
+              [activePos.markPrice || 0, coin_id]
             );
           } catch (err) { logger.error('DB Update error (close):', err.message); }
           break;
