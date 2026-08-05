@@ -105,7 +105,10 @@ const executorService = {
 
       // 2. TRAVA DE SEGURANÇA: Só um trade por vez
       if (activePositions.length > 0) {
-        logger.info(`[BLOQUEIO] Tentativa de entrada em ${symbol} negada: Já existe um trade aberto em ${activePositions[0].symbol}.`);
+        // Log apenas se for a primeira vez que vemos essa moeda no ciclo ou se for uma entrada manual
+        if (decision.decision === 'ENTRY' || decision.decision === 'enter') {
+           // logger.debug(`[BLOQUEIO] Entrada em ${symbol} negada: Trade aberto em ${activePositions[0].symbol}.`);
+        }
         return {
           status: 'skipped',
           reason: 'already_has_open_position',
