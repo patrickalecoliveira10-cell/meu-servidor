@@ -114,7 +114,7 @@ class BybitService {
     }
   }
 
-  async placeOrder(symbol, side, orderType, qty, price = null, stopLoss = null, takeProfit = null) {
+  async placeOrder(symbol, side, orderType, qty, price = null, stopLoss = null, takeProfit = null, reduceOnly = false) {
     try {
       const params = {
         category: 'linear',
@@ -122,7 +122,8 @@ class BybitService {
         side,
         orderType,
         qty,
-        timeInForce: 'GTC'
+        timeInForce: 'GTC',
+        reduceOnly: reduceOnly
       };
 
       if (price && orderType === 'LIMIT') {
