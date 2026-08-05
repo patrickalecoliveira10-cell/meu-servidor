@@ -230,13 +230,18 @@ const executorService = {
           break;
 
         case 'close':
-          logger.info(`[EXECUTOR] Closing FULL position for ${coin_id} (${activePos.size} units)`);
           const fullCloseSide = activePos.side === 'Buy' ? 'Sell' : 'Buy';
+          logger.info(`[EXECUTOR] Closing FULL position for ${coin_id} (${activePos.size} units) using ${fullCloseSide}`);
+
           await bybitService.placeOrder(
             coin_id,
             fullCloseSide,
             'Market',
-            activePos.size
+            activePos.size,
+            null, // price
+            null, // SL
+            null, // TP
+            true  // reduceOnly OBRIGATÓRIO PARA FECHAR
           );
 
           // Limpa ordens pendentes e stops ao fechar manual
