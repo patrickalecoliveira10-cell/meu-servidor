@@ -44,19 +44,17 @@ class Brain {
       // 2. Simular para histórico
       await Simulation.run(snapshot, decision);
 
-      // 3. Se a decisão for relevante, manter na memória para o Executor buscar
-      if (decision.decision !== 'not_enter') {
-        this.activeRecommendations.set(coin_id, {
-          coin_id,
-          symbol: coin_id,
-          decision: decision.decision.toUpperCase(),
-          side: decision.side,
-          confidence: decision.confidence,
-          price: decision.price,
-          stayReason: decision.stayReason, // REPASSANDO O MOTIVO
-          timestamp: new Date()
-        });
-      }
+      // 3. Manter na memória para o Executor buscar (sempre atualiza o stayReason)
+      this.activeRecommendations.set(coin_id, {
+        coin_id,
+        symbol: coin_id,
+        decision: decision.decision.toUpperCase(),
+        side: decision.side,
+        confidence: decision.confidence,
+        price: decision.price,
+        stayReason: decision.stayReason,
+        timestamp: new Date()
+      });
 
       return decision;
     } catch (error) {
