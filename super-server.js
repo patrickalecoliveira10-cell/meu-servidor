@@ -26,19 +26,14 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 
-// Rotas Unificadas
-const brainRoutes = require('./ai-brain/src/routes/index');
-const executorRoutes = require('./executor/src/routes/index');
-const scannerRoutes = require('./scanner/src/routes/scanner');
-const scannerController = require('./scanner/src/controllers/scannerController');
+// 1. Compatibilidade Direta com App Android (Prioridade Máxima)
+app.get('/api/status', (req, res) => scannerController.getStatus(req, res));
+app.get('/api/results', (req, res) => scannerController.getResults(req, res));
 
+// 2. Rotas Unificadas dos Serviços
 app.use('/api', brainRoutes); // Rotas da IA
 app.use('/api/executor', executorRoutes); // Rotas do Executor
 app.use('/api/scanner', scannerRoutes); // Rotas do Scanner
-
-// Compatibilidade Direta com App Android
-app.get('/api/status', (req, res) => scannerController.getStatus(req, res));
-app.get('/api/results', (req, res) => scannerController.getResults(req, res));
 
 app.get('/', (req, res) => res.json({
     service: 'Unified Trading System V2',
