@@ -113,21 +113,41 @@ router.post('/manage', async (req, res) => {
   }
 });
 
-// NOVO: Fechamento Manual pelo App Android
-router.post('/close', async (req, res) => {
+// NOVO: Ação genérica do App Android (Mapeia para fechar)
+router.post('/action', async (req, res) => {
   try {
-    const { symbol } = req.body;
-    if (!symbol) return sendResponse(res, false, null, "Symbol is required", 400);
+    const { action, symbol } = req.body;
+    logger.info(`[ANDROID_ACTION] ${action} solicitado para ${symbol}`);
 
-    logger.info(`[MANUAL_CLOSE] Solicitado fechamento para ${symbol}`);
-    const result = await executorService.updatePositionManagement({
-      coin_id: symbol,
-      decision: 'close'
-    });
+    if (action === 'CLOSE') {
+      const result = await executorService.updatePositionManagement({
+        coin_id: symbol,
+        decision: 'close'
+      });
+      return sendResponse(res, true, result, `Position ${symbol} closed`);
+    }
 
-    sendResponse(res, true, result, `Position ${symbol} closed successfully`);
+    sendResponse(res, true, null, "Action received");
   } catch (error) {
-    logger.error(`Error closing position ${req.body.symbol}:`, error);
+    logger.error('Error in android action:', error);
+    sendResponse(res, false, null, error.message, 500);
+  }
+});
+
+// NOVO: Botão de Emergência do App
+router.post('/emergency', async (req, res) => {
+  try {
+    logger.warn('[EMERGENCY] Modo de emergência acionado!');
+    // Fecha tudo
+    const bybit = require('../services/bybit');
+    const positions = await bybit.getPosition();
+    for (const p of positions) {
+       if (parseFloat(p.size) > 0) {
+         await executorService.updatePositionManagement({ coin_id: p.symbol, decision: 'close' });
+       }
+    }
+    sendResponse(res, true, null, "All positions closed (Emergency)");
+  } catch (error) {
     sendResponse(res, false, null, error.message, 500);
   }
 });
