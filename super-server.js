@@ -12,7 +12,7 @@ const db = require('./ai-brain/src/database/connection');
 
 // Importação dos Núcleos com caminhos seguros e log de depuração
 console.log('Verificando caminhos de módulos...');
-const brainPath = path.join(__dirname, 'ai-brain', 'src', 'ai', 'brains');
+const brainPath = path.join(__dirname, 'ai-brain', 'src', 'ai', 'brain');
 const executorPath = path.join(__dirname, 'executor', 'src', 'services', 'executor');
 const scannerPath = path.join(__dirname, 'scanner', 'src', 'scanner', 'marketScanner');
 
@@ -75,7 +75,9 @@ async function start() {
         // 4. Inicializar Scanner
         logger.info('Iniciando Market Scanner...');
         setTimeout(() => {
-          marketScanner.start().catch(error => {
+          marketScanner.start().then(() => {
+            logger.info('Market Scanner started successfully in unified mode');
+          }).catch(error => {
             logger.error('Failed to auto-start scanner in unified mode:', error);
           });
         }, 5000);
