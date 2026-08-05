@@ -12,7 +12,7 @@ const db = require('./ai-brain/src/database/connection');
 
 // Importação dos Núcleos com caminhos seguros e log de depuração
 console.log('Verificando caminhos de módulos...');
-const brainPath = path.join(__dirname, 'ai-brain', 'src', 'ai', 'brain');
+const brainPath = path.join(__dirname, 'ai-brain', 'src', 'ai', 'brains');
 const executorPath = path.join(__dirname, 'executor', 'src', 'services', 'executor');
 const scannerPath = path.join(__dirname, 'scanner', 'src', 'scanner', 'marketScanner');
 
