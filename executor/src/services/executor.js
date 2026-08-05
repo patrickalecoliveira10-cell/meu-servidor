@@ -73,8 +73,11 @@ const executorService = {
 
       const response = await axios.get(`${baseUrl}/api/recommendations`, { timeout: 5000 });
 
-      if (response.data && Array.isArray(response.data)) {
-        for (const signal of response.data) {
+      // Ajuste para o formato unificado { success: true, data: [...] }
+      const signals = (response.data && response.data.data) ? response.data.data : response.data;
+
+      if (signals && Array.isArray(signals)) {
+        for (const signal of signals) {
           await this.processRecommendation(signal);
         }
       }
