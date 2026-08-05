@@ -1,6 +1,15 @@
 const path = require('path');
 const logger = require(path.join(__dirname, '../logs/logger.js'));
-const Brain = require(path.join(__dirname, '../ai/brain.js'));
+const fs = require('fs');
+let Brain;
+const brainPath = path.join(__dirname, '../ai/brain.js');
+const brainsPath = path.join(__dirname, '../ai/brains.js');
+
+if (fs.existsSync(brainPath)) {
+  Brain = require(brainPath);
+} else {
+  Brain = require(brainsPath);
+}
 const queries = require(path.join(__dirname, '../database/queries.js'));
 const config = require(path.join(__dirname, '../config/index.js'));
 
