@@ -210,8 +210,10 @@ const executorService = {
       if (signal.reason) {
           this.lastReasons[coin_id] = signal.reason;
       }
+
+      const allPositions = await bybitService.getPosition(coin_id);
       // Filtra posições realmente abertas (size > 0)
-      const activePos = positions.find(p => p.symbol === coin_id && parseFloat(p.size || 0) > 0);
+      const activePos = allPositions.find(p => p.symbol === coin_id && parseFloat(p.size || 0) > 0);
 
       if (!activePos) {
         logger.warn(`[EXECUTOR] Management signal ${decision} for ${coin_id} ignored: No active position found.`);
