@@ -1,7 +1,7 @@
 const bybitService = require('./bybit');
 const db = require('../database/connection');
 const config = require('../config');
-const logger = require('../logger');
+const logger = require('../logger.js');
 const axios = require('axios');
 
 const executorService = {
@@ -47,8 +47,8 @@ const executorService = {
     // Execução imediata
     this.monitorAndExecute();
 
-    // Intervalo de polling
-    const interval = (config.aiBrain && config.aiBrain.pollInterval) || 5000;
+    // Intervalo de polling aumentado para economizar recursos (30 segundos)
+    const interval = (config.aiBrain && config.aiBrain.pollInterval) || 30000;
     this.monitoringInterval = setInterval(() => {
       if (!this.isPaused && !this.emergencyMode) {
         this.monitorAndExecute();
@@ -66,7 +66,11 @@ const executorService = {
 
   async checkAIRecommendations() {
     try {
-      const baseUrl = (config.aiBrain && config.aiBrain.apiUrl) || 'https://trickappserv2.onrender.com';
+      // Se estiver rodando unificado, usa localhost para não gastar banda de internet
+      const isUnified = process.env.UNIFIED_MODE === 'true';
+      const port = process.env.PORT || 10000;
+      const baseUrl = isUnified ? `http://localhost:${port}` : ((config.aiBrain && config.aiBrain.apiUrl) || 'https://trickappserv2.onrender.com');
+
       const response = await axios.get(`${baseUrl}/api/recommendations`, { timeout: 5000 });
 
       if (response.data && Array.isArray(response.data)) {
