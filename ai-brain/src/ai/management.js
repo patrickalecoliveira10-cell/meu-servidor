@@ -1,6 +1,7 @@
 const logger = require('../logs/logger.js');
 const queries = require('../database/queries.js');
 const apiClient = require('../utils/api-client.js');
+const Intelligence = require('./intelligence.js');
 
 class Management {
   constructor() {
@@ -59,6 +60,22 @@ class Management {
         params.percent = 0.5;
         reason = 'Target 1 reached (1.2 ATR). Closing 50% to secure profit.';
         operation.p_exit_done = true;
+      }
+
+      // 4. SAÍDA ANTECIPADA (STOP PREVENTIVO) - NOVO!
+      // Se o ROI estiver abaixo de -2% e a IA detectar que a tendência é de queda contínua
+      if (profitPct < -2.0) {
+        const reAnalysis = await Intelligence.analyze({
+            coin_id: operation.coin_id,
+            indicators: indicators,
+            price: current_price,
+            timeframe: operation.timeframe || '15m'
+        }, weights, config);
+
+        if (reAnalysis.win_probability < 0.45) {
+            decision = 'close';
+            reason = `Preventive Stop: ROI ${profitPct.toFixed(2)}% and Low Recovery Prob (${(reAnalysis.win_probability * 100).toFixed(1)}%).`;
+        }
       }
 
       const managementDecision = {
