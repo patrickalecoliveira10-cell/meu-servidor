@@ -79,6 +79,12 @@ const executorService = {
 
       if (signals && Array.isArray(signals)) {
         for (const signal of signals) {
+          // CAPTURA O MOTIVO SEMPRE (Independente de entrar no trade ou não)
+          const sym = (signal.coin_id || signal.symbol || '').toUpperCase();
+          if (sym && signal.stayReason) {
+              this.lastReasons[sym] = signal.stayReason;
+          }
+
           await this.processRecommendation(signal);
         }
       }
