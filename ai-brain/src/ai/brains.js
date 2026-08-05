@@ -215,14 +215,14 @@ class Brain {
             // Nota: Precisamos dos indicadores atuais da moeda para re-avaliar
             // Vamos buscar o último snapshot do banco para essa moeda
             const latestSnapshot = await queries.getLatestSnapshot(pos.symbol);
-            if (latestSnapshot) {
-              await Management.reevaluate({
-                ...pos,
-                coin_id: pos.symbol,
-                current_price: pos.currentPrice || latestSnapshot.close,
-                indicators: latestSnapshot.indicators || {}
-              }, this.weights, this.config);
-            }
+
+            await Management.reevaluate({
+              ...pos,
+              coin_id: pos.symbol,
+              current_price: pos.currentPrice,
+              entry_price: pos.entryPrice,
+              indicators: latestSnapshot?.indicators || {} // Fallback para objeto vazio se não houver snapshot
+            }, this.weights, this.config);
           }
         }
       } catch (error) {
