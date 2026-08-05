@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
 const config = require('../config');
-const logger = require('../logger');
+const logger = require('../logs/logger.js');
 
 class Database {
   constructor() {
