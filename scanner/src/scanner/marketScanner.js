@@ -205,12 +205,14 @@ class MarketScanner {
         timestamp: unixTimestamp
       });
 
-      // NOTIFICAR IA (Servidor 2) para processamento imediato e aprendizado
+      // NOTIFICAR IA (MODO UNIFICADO) para processamento imediato
       try {
-        const aiUrl = process.env.AI_BRAIN_URL || 'https://trickappserv2.onrender.com';
-        // Ajustado de /api/ai/snapshot para /api/snapshot (rota correta do Servidor 2)
+        const isUnified = process.env.UNIFIED_MODE === 'true';
+        const port = process.env.PORT || 10000;
+        const aiUrl = isUnified ? `http://localhost:${port}` : (process.env.AI_BRAIN_URL || 'https://trickappserv2.onrender.com');
+
         axios.post(`${aiUrl}/api/snapshot`, snapshot).catch((err) => {
-          logger.error(`Failed to send snapshot to AI at ${aiUrl}: ${err.message}`);
+          logger.error(`[Scanner -> IA] Erro na comunicação interna: ${err.message}`);
         });
       } catch (aiErr) {
         logger.error(`Error in notifying AI: ${aiErr.message}`);
