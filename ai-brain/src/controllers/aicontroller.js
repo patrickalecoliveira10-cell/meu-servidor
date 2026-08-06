@@ -262,19 +262,10 @@ class AIController {
 
   async getRecommendations(req, res) {
     try {
-      const limit = parseInt(req.query.limit) || 10;
-      const decisions = await queries.getRecentDecisions(limit);
+      // Pega as recomendações vivas da memória do Brain, não do histórico do banco
+      const recommendations = Brain.getRecommendations();
 
-      const recommendations = decisions
-        .filter(d => d.decision === 'enter')
-        .map(d => ({
-          symbol: d.coin_id,
-          type: d.side || 'LONG',
-          confidence: parseFloat(d.confidence || 0),
-          price: parseFloat(d.price || 0),
-          timestamp: new Date(d.timestamp).getTime()
-        }));
-
+      // O Executor espera um array de recomendações com stayReason
       sendResponse(res, true, recommendations);
     } catch (error) {
       logger.error('Error in getRecommendations:', error);
