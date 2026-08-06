@@ -14,24 +14,15 @@ const config = require(path.join(__dirname, 'src/config/index.js'));
 const logger = require(path.join(__dirname, 'src/logs/logger.js'));
 const db = require(path.join(__dirname, 'src/database/connection.js'));
 const routes = require(path.join(__dirname, 'src/routes/index.js'));
-const Brain = require(path.join(__dirname, 'src/ai/brains.js'));
+const Brain = require(path.join(__dirname, 'src/ai/brain.js')); // Note: No src/ai/brains.js here based on list_files
 
 const app = express();
-
-// Necessário para o Render identificar o IP real e não o do balanceador
-app.set('trust proxy', 1);
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(compression());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Request logging para debug no Render
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
 
 app.use('/api', routes);
 
@@ -66,8 +57,20 @@ const startServer = async () => {
       await db.initSchema();
     }
 
-    // 3. Inicialização do Cérebro
+    // 3. Verificar tamanho do banco e limpar se necessário
+    if (db.checkSizeAndCleanup) {
+      await db.checkSizeAndCleanup();
+    }
+
+    // 4. Inicialização do Cérebro
     await Brain.initialize();
+
+    // 5. Agendar limpeza automática a cada 6 horas
+    setInterval(async () => {
+      if (db.checkSizeAndCleanup) {
+        await db.checkSizeAndCleanup();
+      }
+    }, 6 * 60 * 60 * 1000); // A cada 6 horas
 
     const PORT = process.env.PORT || 3002;
     app.listen(PORT, () => {
