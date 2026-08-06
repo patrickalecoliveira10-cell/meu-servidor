@@ -14,7 +14,7 @@ const config = require(path.join(__dirname, 'src/config/index.js'));
 const logger = require(path.join(__dirname, 'src/logs/logger.js'));
 const db = require(path.join(__dirname, 'src/database/connection.js'));
 const routes = require(path.join(__dirname, 'src/routes/index.js'));
-const Brain = require(path.join(__dirname, 'src/ai/brain.js')); // Note: No src/ai/brains.js here based on list_files
+const Brain = require(path.join(__dirname, 'src/ai/brains.js'));
 
 const app = express();
 
