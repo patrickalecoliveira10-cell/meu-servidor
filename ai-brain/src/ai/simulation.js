@@ -133,4 +133,4 @@ class Simulation {
   }
 }
 
-module.exports = new Simulation();
+module.exports = Simulation;
