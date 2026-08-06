@@ -68,10 +68,95 @@ const executorService = {
 
   async monitorAndExecute() {
     try {
+      // 1. Verificar se há posição aberta na Bybit para gestão dinâmica
+      const allPositions = await bybitService.getPosition() || [];
+      const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
+
+      if (activePositions.length > 0) {
+        const pos = activePositions[0];
+        await this.handleDynamicManagement(pos);
+        // Se já tem posição, não tenta abrir novas (Uma por vez)
+        return;
+      }
+
+      // 2. Se não houver posição, buscar recomendações da IA para entrada
       await this.checkAIRecommendations();
     } catch (error) {
       logger.error('Loop error:', error.message);
     }
+  },
+
+  async handleDynamicManagement(position) {
+    try {
+      const symbol = position.symbol;
+
+      // Obter dados recentes do scanner para análise
+      const isUnified = process.env.UNIFIED_MODE === 'true';
+      const port = process.env.PORT || 10000;
+      const baseUrl = isUnified ? `http://localhost:${port}` : 'https://trickappserv2.onrender.com';
+
+      const scannerResp = await axios.get(`${baseUrl}/api/scanner/status`, { timeout: 3000 });
+      const snapshots = scannerResp.data?.data || scannerResp.data || [];
+      const snapshot = snapshots.find(s => s.coin_id === symbol || s.symbol === symbol);
+
+      if (!snapshot || !this.brainInstance) return;
+
+      // Buscar info adicional no banco sobre essa operação
+      const opInfo = await db.query(
+        "SELECT * FROM trading_ai.operations WHERE symbol = $1 AND status = 'OPEN' LIMIT 1",
+        [symbol]
+      );
+
+      if (opInfo.rows.length === 0) return;
+      const dbPos = opInfo.rows[0];
+
+      // Inteligência analisa o que fazer com a posição aberta
+      const decision = this.brainInstance.intelligence.analyzeLivePosition(snapshot, {
+        ...dbPos,
+        entry_price: parseFloat(dbPos.entry_price) / 10000000000
+      });
+
+      if (decision.action !== 'hold') {
+        logger.info(`[DYNAMIC] Action for ${symbol}: ${decision.action} - ${decision.reason}`);
+
+        // Executar a ação na exchange via updatePositionManagement
+        await this.updatePositionManagement({
+            coin_id: symbol,
+            decision: decision.action,
+            params: decision.params,
+            reason: decision.reason
+        });
+
+        // Atualizar banco de dados com a nova análise e status
+        const updateData = {
+            reason: decision.reason,
+            partial_exit_done: decision.action === 'partial_exit' ? true : dbPos.partial_exit_done,
+            partial_entry_count: decision.action === 'partial_entry' ? (dbPos.partial_entry_count || 0) + 1 : dbPos.partial_entry_count,
+            stop_loss: decision.params?.new_stop || null,
+            trailing_stop: decision.params?.trailing_stop || null
+        };
+
+        // Chamada direta ao queries.js (que deve estar exportado ou acessível)
+        // Para simplificar, usaremos o db.query direto ou um helper
+        await this.persistDynamicUpdate(symbol, updateData);
+      }
+    } catch (err) {
+      logger.error(`Error in dynamic management for ${position.symbol}:`, err.message);
+    }
+  },
+
+  async persistDynamicUpdate(symbol, data) {
+    const sl = data.stop_loss ? BigInt(Math.round(data.stop_loss * 10000000000)) : null;
+    const ts = data.trailing_stop ? Math.round(parseFloat(data.trailing_stop) * 100) : null;
+
+    await db.query(`
+      UPDATE trading_ai.operations
+      SET last_analysis = $1, partial_exit_done = $2, partial_entry_count = $3,
+          stop_loss = COALESCE($4, stop_loss), trailing_stop = COALESCE($5, trailing_stop),
+          updated_at = NOW()
+      WHERE symbol = $6 AND status = 'OPEN'`,
+      [data.reason, data.partial_exit_done, data.partial_entry_count, sl, ts, symbol]
+    );
   },
 
   async checkAIRecommendations() {
@@ -252,6 +337,17 @@ const executorService = {
       }
 
       switch (decision) {
+        case 'partial_entry':
+          const balance = await bybitService.getWalletBalance();
+          const currentPrice = await bybitService.getTickerPrice(coin_id);
+          // Adiciona mais 15% da banca na posição atual
+          let entryAmount = balance * 0.15;
+          let entryQty = (entryAmount / currentPrice).toString();
+
+          logger.info(`[EXECUTOR] Executing partial entry for ${coin_id}: ${entryAmount} USDT`);
+          await bybitService.placeOrder(coin_id, activePos.side, 'Market', entryQty);
+          break;
+
         case 'partial_exit':
           const exitQty = (parseFloat(activePos.size) * (params.percent || 0.5)).toString();
           const closeSide = activePos.side === 'Buy' ? 'Sell' : 'Buy';
