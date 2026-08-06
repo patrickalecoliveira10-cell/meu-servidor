@@ -166,7 +166,7 @@ const executorService = {
             reason: decision.reason
         });
 
-        // Atualizar banco de dados com a nova análise e status
+        // Atualizar banco de dados com a nova análise e status usando o helper Centralizado
         const updateData = {
             reason: decision.reason,
             partial_exit_done: decision.action === 'partial_exit' ? true : dbPos.partial_exit_done,
@@ -175,27 +175,12 @@ const executorService = {
             trailing_stop: decision.params?.trailing_stop || null
         };
 
-        // Chamada direta ao queries.js (que deve estar exportado ou acessível)
-        // Para simplificar, usaremos o db.query direto ou um helper
-        await this.persistDynamicUpdate(symbol, updateData);
+        const queries = require('../../../ai-brain/src/database/queries');
+        await queries.updateOperationDynamic(symbol, updateData);
       }
     } catch (err) {
       logger.error(`Error in dynamic management for ${position.symbol}:`, err.message);
     }
-  },
-
-  async persistDynamicUpdate(symbol, data) {
-    const sl = data.stop_loss ? BigInt(Math.round(data.stop_loss * 10000000000)) : null;
-    const ts = data.trailing_stop ? Math.round(parseFloat(data.trailing_stop) * 100) : null;
-
-    await db.query(`
-      UPDATE trading_ai.operations
-      SET last_analysis = $1, partial_exit_done = $2, partial_entry_count = $3,
-          stop_loss = COALESCE($4, stop_loss), trailing_stop = COALESCE($5, trailing_stop),
-          updated_at = NOW()
-      WHERE symbol = $6 AND status = 'OPEN'`,
-      [data.reason, data.partial_exit_done, data.partial_entry_count, sl, ts, symbol]
-    );
   },
 
   async checkAIRecommendations(cycleId = 'default') {
@@ -392,7 +377,7 @@ const executorService = {
           break;
 
         case 'activate_trailing':
-          logger.info(`[EXECUTOR] Activating Native Trailing Stop for ${coin_id}: Recoil ${params.trailing_stop}`);
+          logger.info(`[EXECUTOR] Activating Native Trailing Stop for ${coin_id}: Distance ${params.trailing_stop}`);
           await bybitService.setTradingStop(coin_id, null, null, params.trailing_stop);
           break;
 
