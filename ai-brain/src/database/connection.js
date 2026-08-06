@@ -77,7 +77,18 @@ class Database {
           "ALTER TABLE trading_ai.scanner_snapshots ALTER COLUMN low TYPE BIGINT",
           "ALTER TABLE trading_ai.scanner_snapshots ALTER COLUMN close TYPE BIGINT",
 
-          // Fix SMALLINT limits for learning counters - handle existing overflow data first
+          // Fix unique constraint for ai_indicator_weights to match ON CONFLICT query
+          "DROP TABLE IF EXISTS trading_ai.ai_indicator_weights CASCADE",
+          `CREATE TABLE IF NOT EXISTS trading_ai.ai_indicator_weights (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            indicator_name VARCHAR(50) NOT NULL,
+            coin_id VARCHAR(20),
+            timeframe VARCHAR(10),
+            weight SMALLINT DEFAULT 100,
+            performance_score SMALLINT DEFAULT 50,
+            last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE(indicator_name, COALESCE(coin_id, '00000000-0000-0000-0000-000000000000'), COALESCE(timeframe, 'ALL'))
+          )`,
           "UPDATE trading_ai.ai_coin_learning SET total_examples = 32767 WHERE total_examples > 32767",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN total_examples TYPE INTEGER",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN total_decisions TYPE INTEGER",
