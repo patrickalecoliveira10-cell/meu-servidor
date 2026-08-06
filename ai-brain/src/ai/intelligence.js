@@ -182,12 +182,68 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis, config) {
-    let threshold = config.confidence_threshold || 0.7;
-    if (threshold > 1) threshold = threshold / 100;
+    // Só entra com 85% de confiança ou mais para garantir qualidade máxima
+    const entryThreshold = 0.85;
 
-    if (confidence >= threshold) return 'enter';
-    if (confidence >= threshold - 0.1) return 'wait';
+    if (confidence >= entryThreshold) return 'enter';
+    if (confidence >= 0.70) return 'wait'; // Analisando possível entrada ou pullback
     return 'not_enter';
+  }
+
+  // Analisa uma posição aberta e decide manobras dinâmicas
+  analyzeLivePosition(snapshot, position) {
+    const rsi = snapshot.indicators?.rsi?.value || 50;
+    const adx = snapshot.indicators?.adx?.value || 20;
+    const currentPrice = parseFloat(snapshot.price || snapshot.close);
+    const entryPrice = parseFloat(position.entry_price);
+
+    const profitPct = position.side === 'Buy' || position.side === 'buy'
+        ? ((currentPrice - entryPrice) / entryPrice) * 100
+        : ((entryPrice - currentPrice) / entryPrice) * 100;
+
+    let decision = {
+        action: 'hold',
+        reason: "Posição estável, monitorando...",
+        params: {}
+    };
+
+    // 1. SAÍDA PARCIAL (Proteger Lucro)
+    if (profitPct >= 2.0 && !position.partial_exit_done) {
+        decision.action = 'partial_exit';
+        decision.params = { percent: 0.5 };
+        decision.reason = "Alvo de 2% atingido. Realizando parcial de 50% para garantir lucro.";
+        return decision;
+    }
+
+    // 2. TRAILING STOP (Maximizar Lucro)
+    if (profitPct >= 1.5) {
+        decision.action = 'activate_trailing';
+        decision.params = { trailing_stop: "0.5" }; // Recuo de 0.5%
+        decision.reason = "Lucro expressivo detectado. Ativando Trailing Stop para acompanhar a subida.";
+        return decision;
+    }
+
+    // 3. ENTRADA PARCIAL (Aumentar aposta se promissor)
+    if (profitPct > 0.5 && profitPct < 1.0 && adx > 25 && (position.partial_entry_count || 0) < 2) {
+        decision.action = 'partial_entry';
+        decision.reason = "Tendência forte confirmada. Realizando entrada parcial para maximizar retorno.";
+        return decision;
+    }
+
+    // 4. GESTÃO DE LOSS (Reduzir Stop se reverter)
+    if (profitPct < -1.0) {
+        if (rsi > 60 && position.side === 'buy') {
+            decision.action = 'move_stop';
+            decision.params = { new_stop: entryPrice * 0.992 }; // Encurta o stop
+            decision.reason = "Sinais de reversão contra a posição. Encurtando stop para minimizar perda.";
+        } else if (rsi < 40 && position.side === 'buy') {
+            decision.action = 'move_stop';
+            decision.params = { new_stop: entryPrice * 0.97 }; // Dá mais espaço se for só um susto
+            decision.reason = "Pullback saudável detectado. Ajustando stop para evitar violinada.";
+        }
+    }
+
+    return decision;
   }
 
   getFallbackDecision(snapshot) {
