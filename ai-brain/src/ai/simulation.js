@@ -1,14 +1,16 @@
 const logger = require('../logs/logger.js');
 const queries = require('../database/queries.js');
-const Learning = require('./learning.js');
 
 class Simulation {
   constructor() {
     this.brain = null;
+    this.learning = null;
   }
 
   async init(brain) {
     this.brain = brain;
+    // Lazy load learning to avoid circular dependency at boot
+    this.learning = require('./learning.js');
     logger.info('Simulation module initialized');
   }
 
@@ -120,7 +122,9 @@ class Simulation {
           logger.info(`Simulation closed for ${sim.coin_id}: ${result.toUpperCase()} (${profitLoss.toFixed(2)}%)`);
 
           // Feedback to Learning module to adjust weights
-          await Learning.adjustWeightsBasedOnResult(sim, result === 'win');
+          if (this.learning) {
+            await this.learning.adjustWeightsBasedOnResult(sim, result === 'win');
+          }
         }
       }
     } catch (error) {
