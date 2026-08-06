@@ -87,7 +87,10 @@ const executorService = {
     const isUnified = process.env.UNIFIED_MODE === 'true';
     const interval = isUnified ? 10000 : ((config.aiBrain && config.aiBrain.pollInterval) || 30000);
 
+    logger.info(`[EXECUTOR] Intervalo de monitoramento: ${interval}ms (Unified: ${isUnified})`);
+
     this.monitoringInterval = setInterval(() => {
+      logger.info(`[EXECUTOR] Timer disparado - executando ciclo. isPaused: ${this.isPaused}, emergencyMode: ${this.emergencyMode}`);
       if (!this.isPaused && !this.emergencyMode) {
         this.monitorAndExecute();
       }
