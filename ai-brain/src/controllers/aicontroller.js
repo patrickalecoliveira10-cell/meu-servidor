@@ -94,13 +94,14 @@ class AIController {
       const brainStatus = activeBrain.getStatus();
 
       // Fonte de verdade: Status em memória do Brain
-      // Pegamos de vários possíveis campos de nomes diferentes dependendo da versão (brain vs brains)
-      const examples = brainStatus.examples ||
-                       brainStatus.current_examples_count ||
-                       brainStatus.examplesAnalyzed || 0;
+      // Priorizamos o valor que está sendo incrementado em tempo real no global.liveBrainInstance
+      const examples = (global.liveBrainInstance && global.liveBrainInstance.getStatus)
+        ? (global.liveBrainInstance.getStatus().examples || global.liveBrainInstance.getStatus().current_examples_count || 0)
+        : (brainStatus.examples || brainStatus.current_examples_count || 0);
 
-      const simulatedOps = brainStatus.closedTrades ||
-                           parseInt(live.total_simulated_ops || 0);
+      const simulatedOps = (global.liveBrainInstance && global.liveBrainInstance.getStatus)
+        ? (global.liveBrainInstance.getStatus().closedTrades || global.liveBrainInstance.getStatus().total_simulated_ops || 0)
+        : (brainStatus.closedTrades || parseInt(live.total_simulated_ops || 0));
 
       // Normalização: 0.0 a 1.0
       const winRateRaw = parseFloat(stats.win_rate || 0);
@@ -143,7 +144,8 @@ class AIController {
       const brainStatus = Brain.getStatus();
 
       // Pegamos o valor mais alto entre banco e memória para garantir sincronia
-      const snapshotsCount = Math.max(parseInt(live.ai_examples || 0), brainStatus.examples || 0);
+      const liveBrain = global.liveBrainInstance || Brain;
+      const snapshotsCount = Math.max(parseInt(live.ai_examples || 0), liveBrain.getStatus().examples || liveBrain.getStatus().current_examples_count || 0);
       const decisionsCount = parseInt(live.total_ai_decisions || 0);
 
       sendResponse(res, true, {
