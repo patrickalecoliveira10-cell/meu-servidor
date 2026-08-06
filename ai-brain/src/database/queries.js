@@ -1,6 +1,7 @@
 const db = require('./connection.js');
 
 const queries = {
+  // Helper para resolver UUID de moeda
   async getInternalCoinId(symbol) {
     try {
       const result = await db.query('SELECT id FROM trading_ai.coins WHERE symbol = $1 OR id = $1 LIMIT 1', [symbol]);
@@ -8,6 +9,7 @@ const queries = {
     } catch (e) { return symbol; }
   },
 
+  // AI Configuration
   async getConfiguration() {
     try {
       const query = 'SELECT * FROM trading_ai.ai_configuration ORDER BY last_updated DESC LIMIT 1';
@@ -21,6 +23,7 @@ const queries = {
     } catch (error) { return null; }
   },
 
+  // Obter pesos dos indicadores
   async getIndicatorWeights(coinId) {
     try {
       let query = 'SELECT * FROM trading_ai.ai_indicator_weights';
@@ -48,14 +51,15 @@ const queries = {
       DO UPDATE SET weight = EXCLUDED.weight, performance_score = EXCLUDED.performance_score, last_updated = NOW();
     `;
     await db.query(query, [
-      w.indicator_name,
-      w.coin_id || null,
-      w.timeframe || null,
-      Math.round(w.weight * 100),
-      Math.round(w.performance_score * 100)
+        w.indicator_name,
+        w.coin_id || null,
+        w.timeframe || null,
+        Math.round(w.weight * 100),
+        Math.round(w.performance_score * 100)
     ]);
   },
 
+  // Learning
   async getGlobalLearning() {
     try {
       const query = 'SELECT * FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1';
@@ -74,6 +78,7 @@ const queries = {
       const existing = await this.getGlobalLearning();
       const winRate = Math.round((parseFloat(stats.win_rate) || 0) * 100);
       const avgConfidence = Math.round((parseFloat(stats.avg_confidence) || 0) * 100);
+
       if (existing) {
         await db.query(
           'UPDATE trading_ai.ai_global_learning SET total_examples = $1, total_decisions = $2, win_rate = $3, avg_confidence = $4, last_updated = NOW() WHERE id = $5',
@@ -88,13 +93,20 @@ const queries = {
     } catch (e) { console.error('UpdateGlobalError:', e.message); }
   },
 
+  // Decisions
   async insertDecision(decision) {
     const query = `
-      INSERT INTO trading_ai.ai_decisions (coin_id, timeframe, decision, side, price, confidence, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id;
+      INSERT INTO trading_ai.ai_decisions (
+        coin_id, timeframe, decision, side, price,
+        confidence, timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      RETURNING id;
     `;
     const values = [
-      decision.coin_id, decision.timeframe, decision.decision, decision.side || 'buy',
+      decision.coin_id,
+      decision.timeframe,
+      decision.decision,
+      decision.side || 'buy',
       BigInt(Math.round((parseFloat(decision.price) || 0) * 10000000000)),
       Math.round((parseFloat(decision.confidence) || 0) * 100)
     ];
@@ -115,31 +127,39 @@ const queries = {
   async insertPattern(pattern) {
     try {
       const query = `
-        INSERT INTO trading_ai.ai_patterns (pattern_name, coin_id, timeframe, pattern_type, success_rate, occurrence_count, pattern_data, last_seen)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-        ON CONFLICT (pattern_name, coin_id) DO UPDATE SET occurrence_count = trading_ai.ai_patterns.occurrence_count + 1, last_seen = NOW();
+        INSERT INTO trading_ai.ai_patterns (
+          pattern_name, coin_id, timeframe, pattern_type,
+          success_rate, occurrence_count, pattern_data, last_seen
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (pattern_name, coin_id) DO UPDATE SET
+          occurrence_count = trading_ai.ai_patterns.occurrence_count + 1,
+          last_seen = NOW();
       `;
       await db.query(query, [
-        pattern.pattern_name, pattern.coin_id, pattern.timeframe, pattern.pattern_type,
-        Math.round(pattern.success_rate * 100), 1, JSON.stringify(pattern.pattern_data)
+        pattern.pattern_name, pattern.coin_id, pattern.timeframe,
+        pattern.pattern_type, Math.round(pattern.success_rate * 100),
+        1, JSON.stringify(pattern.pattern_data)
       ]);
     } catch (e) { /* ignore */ }
   },
 
   async insertLearningLog(log) {
     try {
-      await db.query(
-        'INSERT INTO trading_ai.ai_learning_logs (log_type, coin_id, message, data, timestamp) VALUES ($1, $2, $3, $4, NOW())',
-        [log.log_type, log.coin_id, log.message, JSON.stringify(log.data)]
-      );
+      const query = `
+        INSERT INTO trading_ai.ai_learning_logs (log_type, coin_id, message, data, timestamp)
+        VALUES ($1, $2, $3, $4, NOW())
+      `;
+      await db.query(query, [log.log_type, log.coin_id, log.message, JSON.stringify(log.data)]);
     } catch (e) { /* ignore */ }
   },
 
+  // Simulations
   async insertSimulatedOperation(sim) {
     const query = `
-      INSERT INTO trading_ai.ai_simulated_operations
-        (coin_id, timeframe, side, entry_price, stop_loss, take_profit, confidence_at_entry, decision_data, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      INSERT INTO trading_ai.ai_simulated_operations (
+        coin_id, timeframe, side, entry_price, stop_loss, take_profit,
+        confidence_at_entry, decision_data, timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
     `;
     const values = [
       sim.coin_id, sim.timeframe, sim.side || 'buy',
@@ -152,20 +172,22 @@ const queries = {
     try {
       await db.query(query, values);
     } catch (error) {
-      if (error.message.includes('type uuid')) {
-        const coinId = await this.getInternalCoinId(sim.coin_id);
-        const retryValues = [...values]; retryValues[0] = coinId;
-        await db.query(query, retryValues);
-      }
+       if (error.message.includes('type uuid')) {
+         const coinId = await this.getInternalCoinId(sim.coin_id);
+         const retryValues = [...values]; retryValues[0] = coinId;
+         await db.query(query, retryValues);
+       }
     }
   },
 
   async getOpenSimulatedOperations(coinId = null) {
     try {
       let resolvedId = coinId;
+      // Se for um símbolo (string longa que não é UUID), resolvemos primeiro
       if (coinId && typeof coinId === 'string' && !coinId.includes('-')) {
-        resolvedId = await this.getInternalCoinId(coinId);
+          resolvedId = await this.getInternalCoinId(coinId);
       }
+
       let query = "SELECT * FROM trading_ai.ai_simulated_operations WHERE result IS NULL";
       let params = [];
       if (resolvedId) {
@@ -196,6 +218,7 @@ const queries = {
     await db.query(query, [exitPrice, sim.result, profitLoss, sim.duration_seconds, sim.id]);
   },
 
+  // LIVE STATS (O QUE O APP LÊ)
   async getLiveStats() {
     try {
       const query = `
@@ -211,13 +234,14 @@ const queries = {
       `;
       const result = await db.query(query);
       const row = result.rows[0];
+      const totalSims = parseInt(row?.total_simulated_ops || 0);
       const wins = parseInt(row?.total_wins || 0);
       const losses = parseInt(row?.total_losses || 0);
       const closed = wins + losses;
       return {
         ai_examples: parseInt(row?.ai_examples || 0),
         total_real_ops: parseInt(row?.total_real_ops || 0),
-        total_simulated_ops: parseInt(row?.total_simulated_ops || 0),
+        total_simulated_ops: totalSims,
         total_decisions: parseInt(row?.total_decisions || 0),
         correct_decisions: parseInt(row?.correct_decisions || 0),
         avg_confidence: (parseFloat(row?.avg_confidence || 0)) / 100,
@@ -237,13 +261,13 @@ const queries = {
   },
 
   async updateCoinLearning(s) {
-    const safeExamples = Math.min(32767, parseInt(s.total_examples) || 0);
-    await db.query(
-      'INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, win_rate) VALUES ($1, $2, $3) ON CONFLICT (coin_id) DO UPDATE SET total_examples = EXCLUDED.total_examples',
-      [s.coin_id, safeExamples, Math.round(s.win_rate * 100)]
-    );
+    // total_examples now uses INTEGER type (no cap needed after migration)
+    const safeExamples = parseInt(s.total_examples) || 0;
+    await db.query('INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, win_rate) VALUES ($1, $2, $3) ON CONFLICT (coin_id) DO UPDATE SET total_examples = EXCLUDED.total_examples',
+    [s.coin_id, safeExamples, Math.round(s.win_rate*100)]);
   },
 
+  // GESTÃO DINÂMICA DE OPERAÇÕES REAIS
   async updateOperationDynamic(symbol, data) {
     try {
       const query = `
@@ -258,10 +282,18 @@ const queries = {
           updated_at = NOW()
         WHERE symbol = $7 AND status = 'OPEN'
       `;
+
       const sl = data.stop_loss ? BigInt(Math.round(data.stop_loss * 10000000000)) : null;
       const tp = data.take_profit ? BigInt(Math.round(data.take_profit * 10000000000)) : null;
       const ts = data.trailing_stop ? Math.round(parseFloat(data.trailing_stop) * 100) : null;
-      await db.query(query, [sl, tp, ts, data.partial_exit_done, data.partial_entry_count, data.reason, symbol]);
+
+      await db.query(query, [
+        sl, tp, ts,
+        data.partial_exit_done,
+        data.partial_entry_count,
+        data.reason,
+        symbol
+      ]);
     } catch (e) {
       console.error('Error updating dynamic operation:', e.message);
     }
