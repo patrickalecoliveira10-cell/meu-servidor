@@ -77,7 +77,7 @@ class Brain {
         timestamp: new Date()
       });
 
-      logger.info(`[BRAIN] Analysis for ${coin_id}: ${decision.stayReason}`);
+      logger.info(`[BRAIN] Analysis for ${coin_id}: ${decision.stayReason} Confidence: ${Math.round(decision.confidence * 100)}%`);
 
       return decision;
     } catch (error) {
