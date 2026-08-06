@@ -45,12 +45,18 @@ const queries = {
 
   async updateIndicatorWeight(w) {
     const query = `
-      INSERT INTO trading_ai.ai_indicator_weights (indicator_name, coin_id, weight, performance_score, last_updated)
-      VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (indicator_name, COALESCE(coin_id, '00000000-0000-0000-0000-000000000000'))
+      INSERT INTO trading_ai.ai_indicator_weights (indicator_name, coin_id, timeframe, weight, performance_score, last_updated)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+      ON CONFLICT (indicator_name, COALESCE(coin_id, '00000000-0000-0000-0000-000000000000'), COALESCE(timeframe, 'ALL'))
       DO UPDATE SET weight = EXCLUDED.weight, performance_score = EXCLUDED.performance_score, last_updated = NOW();
     `;
-    await db.query(query, [w.indicator_name, w.coin_id || null, Math.round(w.weight * 100), Math.round(w.performance_score * 100)]);
+    await db.query(query, [
+        w.indicator_name,
+        w.coin_id || null,
+        w.timeframe || null,
+        Math.round(w.weight * 100),
+        Math.round(w.performance_score * 100)
+    ]);
   },
 
   // Learning
