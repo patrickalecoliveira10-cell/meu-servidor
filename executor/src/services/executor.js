@@ -96,7 +96,6 @@ const executorService = {
 
   async monitorAndExecute() {
     const cycleId = Math.random().toString(36).substring(5);
-    logger.info(`[DEBUG EXECUTOR] monitorAndExecute iniciado. cycleId=${cycleId}, isRunning=${this.isRunning}`);
     try {
       // 1. Verificar se há posição aberta na Bybit
       const allPositions = await bybitService.getPosition() || [];
@@ -185,15 +184,12 @@ const executorService = {
   },
 
   async checkAIRecommendations(cycleId = 'default') {
-    const now = new Date().toISOString();
-    logger.info(`[DEBUG EXECUTOR] checkAIRecommendations chamado em ${now}. brainInstance: ${!!this.brainInstance}`);
     try {
       let signals;
 
       // MODO UNIFICADO: Acesso direto à memória para tempo real
       if (this.brainInstance) {
         signals = this.brainInstance.getRecommendations();
-        logger.info(`[DEBUG EXECUTOR] Recebidos ${signals?.length || 0} sinais do Brain`);
       } else {
         // MODO SEPARADO: Fallback para API HTTP
         const isUnified = process.env.UNIFIED_MODE === 'true';
@@ -205,7 +201,6 @@ const executorService = {
       }
 
       if (signals && Array.isArray(signals)) {
-        logger.info(`[DEBUG EXECUTOR] Processando ${signals.length} sinais: ${JSON.stringify(signals.map(s => ({coin: s.coin_id, decision: s.decision, confidence: s.confidence, side: s.side})))}`);
         // 1. ATUALIZAR MOTIVOS
         for (const signal of signals) {
           const sym = (signal.coin_id || signal.symbol || '').toUpperCase();
