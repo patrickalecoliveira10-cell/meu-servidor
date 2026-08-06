@@ -6,9 +6,7 @@ const queries = {
     try {
       const result = await db.query('SELECT id FROM trading_ai.coins WHERE symbol = $1 OR id = $1 LIMIT 1', [symbol]);
       return result.rows[0]?.id || symbol;
-    } catch (e) {
-      return symbol;
-    }
+    } catch (e) { return symbol; }
   },
 
   // AI Configuration
@@ -22,12 +20,10 @@ const queries = {
         row.confidence_threshold = (parseFloat(row.confidence_threshold) || 0) / 100;
       }
       return row;
-    } catch (error) {
-      return null;
-    }
+    } catch (error) { return null; }
   },
 
-  // FUNÇÃO DE PESOS (Essencial para não dar erro no Brain)
+  // Obter pesos dos indicadores
   async getIndicatorWeights(coinId) {
     try {
       let query = 'SELECT * FROM trading_ai.ai_indicator_weights';
@@ -51,13 +47,13 @@ const queries = {
     const query = `
       INSERT INTO trading_ai.ai_indicator_weights (indicator_name, coin_id, weight, performance_score, last_updated)
       VALUES ($1, $2, $3, $4, NOW())
-      ON CONFLICT (indicator_name, COALESCE(coin_id, '00000000-0000-0000-0000-000000000000')) 
+      ON CONFLICT (indicator_name, COALESCE(coin_id, '00000000-0000-0000-0000-000000000000'))
       DO UPDATE SET weight = EXCLUDED.weight, performance_score = EXCLUDED.performance_score, last_updated = NOW();
     `;
     await db.query(query, [w.indicator_name, w.coin_id || null, Math.round(w.weight * 100), Math.round(w.performance_score * 100)]);
   },
 
-  // ESTATÍSTICAS GLOBAIS (O que faz o "Examples Analyzed" subir)
+  // Learning
   async getGlobalLearning() {
     try {
       const query = 'SELECT * FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1';
@@ -88,16 +84,47 @@ const queries = {
           [stats.total_examples, stats.total_decisions || 0, winRate, avgConfidence]
         );
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error('UpdateGlobalError:', e.message); }
   },
 
-  // SIMULAÇÕES (Correção do erro "insertSimulatedOperation is not a function")
+  // Decisions
+  async insertDecision(decision) {
+    const query = `
+      INSERT INTO trading_ai.ai_decisions (
+        coin_id, timeframe, decision, side, price,
+        confidence, timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      RETURNING id;
+    `;
+    const values = [
+      decision.coin_id,
+      decision.timeframe,
+      decision.decision,
+      decision.side || 'buy',
+      BigInt(Math.round((parseFloat(decision.price) || 0) * 10000000000)),
+      Math.round((parseFloat(decision.confidence) || 0) * 100)
+    ];
+    try {
+      const result = await db.query(query, values);
+      return result.rows[0].id;
+    } catch (error) {
+      if (error.message.includes('type uuid')) {
+        const coinId = await this.getInternalCoinId(decision.coin_id);
+        const retryValues = [...values]; retryValues[0] = coinId;
+        const result = await db.query(query, retryValues);
+        return result.rows[0].id;
+      }
+      throw error;
+    }
+  },
+
+  // Simulations
   async insertSimulatedOperation(sim) {
     const query = `
       INSERT INTO trading_ai.ai_simulated_operations (
         coin_id, timeframe, side, entry_price, stop_loss, take_profit,
         confidence_at_entry, decision_data, timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
     `;
     const values = [
       sim.coin_id, sim.timeframe, sim.side || 'buy',
@@ -105,25 +132,34 @@ const queries = {
       BigInt(Math.round(sim.stop_loss * 10000000000)),
       BigInt(Math.round(sim.take_profit * 10000000000)),
       Math.round(sim.confidence_at_entry * 100),
-      JSON.stringify(sim.decision_data),
-      new Date()
+      JSON.stringify(sim.decision_data)
     ];
-    await db.query(query, values);
+    try {
+      await db.query(query, values);
+    } catch (error) {
+       if (error.message.includes('type uuid')) {
+         const coinId = await this.getInternalCoinId(sim.coin_id);
+         const retryValues = [...values]; retryValues[0] = coinId;
+         await db.query(query, retryValues);
+       }
+    }
   },
 
   async getOpenSimulatedOperations() {
-    const result = await db.query("SELECT * FROM trading_ai.ai_simulated_operations WHERE result IS NULL");
-    return result.rows.map(row => ({
-      ...row,
-      entry_price: parseFloat(row.entry_price) / 10000000000,
-      stop_loss: parseFloat(row.stop_loss) / 10000000000,
-      take_profit: parseFloat(row.take_profit) / 10000000000
-    }));
+    try {
+      const result = await db.query("SELECT * FROM trading_ai.ai_simulated_operations WHERE result IS NULL");
+      return result.rows.map(row => ({
+        ...row,
+        entry_price: parseFloat(row.entry_price) / 10000000000,
+        stop_loss: parseFloat(row.stop_loss) / 10000000000,
+        take_profit: parseFloat(row.take_profit) / 10000000000
+      }));
+    } catch (e) { return []; }
   },
 
   async updateSimulatedOperation(sim) {
     const query = `
-      UPDATE trading_ai.ai_simulated_operations 
+      UPDATE trading_ai.ai_simulated_operations
       SET exit_price = $1, result = $2, profit_loss = $3, duration_seconds = $4
       WHERE id = $5
     `;
@@ -132,11 +168,11 @@ const queries = {
     await db.query(query, [exitPrice, sim.result, profitLoss, sim.duration_seconds, sim.id]);
   },
 
-  // ESTATÍSTICAS PARA O APP (Onde ele busca os números da tela principal)
+  // LIVE STATS (O QUE O APP LÊ)
   async getLiveStats() {
     try {
       const query = `
-        SELECT 
+        SELECT
           (SELECT COUNT(*) FROM trading_ai.ai_decisions) as total_ai_decisions,
           (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations) as total_simulated_ops,
           (SELECT total_examples FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as ai_examples
@@ -148,20 +184,20 @@ const queries = {
         total_ai_decisions: parseInt(row?.total_ai_decisions || 0),
         total_simulated_ops: parseInt(row?.total_simulated_ops || 0)
       };
-    } catch (e) { return { ai_examples: 0, total_ai_decisions: 0, total_simulated_ops: 0 }; }
+    } catch (e) {
+      console.error('LiveStatsError:', e.message);
+      return { ai_examples: 0, total_ai_decisions: 0, total_simulated_ops: 0 };
+    }
   },
 
-  // Outras funções de suporte
   async getCoinLearning(coinId) {
     const r = await db.query('SELECT * FROM trading_ai.ai_coin_learning WHERE coin_id = $1', [coinId]);
     return r.rows[0];
   },
+
   async updateCoinLearning(s) {
-    await db.query('INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, win_rate) VALUES ($1, $2, $3) ON CONFLICT (coin_id) DO UPDATE SET total_examples = EXCLUDED.total_examples', [s.coin_id, s.total_examples, Math.round(s.win_rate*100)]);
-  },
-  async insertDecision(d) {
-    const q = `INSERT INTO trading_ai.ai_decisions (coin_id, timeframe, decision, side, price, confidence, timestamp) VALUES ($1, $2, $3, $4, $5, $6, NOW())`;
-    await db.query(q, [d.coin_id, d.timeframe, d.decision, d.side, BigInt(Math.round(d.price*10000000000)), Math.round(d.confidence*100)]);
+    await db.query('INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, win_rate) VALUES ($1, $2, $3) ON CONFLICT (coin_id) DO UPDATE SET total_examples = EXCLUDED.total_examples',
+    [s.coin_id, s.total_examples, Math.round(s.win_rate*100)]);
   }
 };
 
