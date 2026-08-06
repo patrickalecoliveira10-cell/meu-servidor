@@ -184,7 +184,7 @@ class Intelligence {
     const winProbability = Math.max(0.1, Math.min(0.9, (netScore + 1) / 2));
 
     // Só entra em BUY — nunca em SELL
-    const side = winProbability >= 0.65 ? 'buy' : null;
+    const side = winProbability >= 0.55 ? 'buy' : null;
 
     return {
       winProbability,
