@@ -11,6 +11,8 @@ const executorService = {
   emergencyMode: false,
   monitoringInterval: null,
   lastReasons: {}, // Armazena os motivos das decisões por moeda
+  lastProcessedSignals: {}, // Trava de memória para evitar spam
+  isProcessingEntry: false, // Bloqueio atômico para evitar múltiplas entradas simultâneas
   brainInstance: null,
 
   setBrain(brain) {
@@ -203,18 +205,26 @@ const executorService = {
       }
 
       if (signals && Array.isArray(signals)) {
+        // 1. ATUALIZAR MOTIVOS (stayReason) PARA TODAS AS MOEDAS
+        // Isso permite que o App mostre o que a IA está pensando sobre cada moeda
         for (const signal of signals) {
           const sym = (signal.coin_id || signal.symbol || '').toUpperCase();
-
-          // CAPTURA O MOTIVO E LOGA PARA DEBUG
           if (sym && signal.stayReason) {
-              this.lastReasons[sym] = signal.stayReason;
-              if (sym === 'XRPUSDT') {
-                  logger.info(`[IA-THINKING] XRPUSDT Analysis: ${signal.stayReason}`);
-              }
+            this.lastReasons[sym] = signal.stayReason;
           }
+        }
 
-          await this.processRecommendation(signal);
+        // 2. FILTRAR O MELHOR SINAL DE ENTRADA (Modo Sniper)
+        // Só processamos entrada se não estivermos ocupados e não houver posição
+        if (!this.isProcessingEntry) {
+          const entrySignals = signals
+            .filter(s => (s.decision === 'enter' || s.decision === 'ENTRY') && (s.confidence >= 0.85))
+            .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+
+          if (entrySignals.length > 0) {
+            logger.info(`[EXECUTOR] Sniper detectou ${entrySignals.length} oportunidades. Escolhendo a melhor: ${entrySignals[0].coin_id}`);
+            await this.processRecommendation(entrySignals[0]);
+          }
         }
       }
     } catch (error) {
@@ -223,46 +233,39 @@ const executorService = {
   },
 
   async processRecommendation(decision) {
-    if (this.isPaused || this.emergencyMode) return { status: 'skipped', reason: 'paused' };
+    if (this.isPaused || this.emergencyMode || this.isProcessingEntry) return { status: 'skipped', reason: 'busy_or_paused' };
 
     try {
       const symbol = (decision.coin_id || decision.symbol || '').toUpperCase();
-
       const side = (decision.side || 'Buy').toLowerCase() === 'buy' ? 'Buy' : 'Sell';
 
-      // SALVA O MOTIVO (RACIOCÍNIO) ANTES DE QUALQUER TRAVA
-      if (symbol && decision.stayReason) {
-          this.lastReasons[symbol] = decision.stayReason;
-          // logger.debug(`[AI ANALYSIS] ${symbol}: ${decision.stayReason}`);
+      if (!symbol) return { status: 'error', reason: 'invalid_symbol' };
+
+      // SÓ PROCESSA SE FOR SINAL DE ENTRADA
+      if (decision.decision !== 'ENTRY' && decision.decision !== 'enter') {
+        return { status: 'ignored', reason: 'not_entry_signal' };
       }
 
-      if (!symbol) {
-        return { status: 'error', reason: 'invalid_symbol' };
-      }
-
-      // 1. BUSCA POSIÇÕES REAIS NA BYBIT
+      // 1. BUSCA POSIÇÕES REAIS NA BYBIT (Verificação final)
       const allPositions = await bybitService.getPosition() || [];
-
-      // Filtrar apenas posições com tamanho real (Bybit V5 retorna entradas vazias para muitos símbolos)
       const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
 
-      // 2. TRAVA DE SEGURANÇA: Só um trade por vez
       if (activePositions.length > 0) {
-        // Log apenas se for a primeira vez que vemos essa moeda no ciclo ou se for uma entrada manual
-        if (decision.decision === 'ENTRY' || decision.decision === 'enter') {
-           // logger.debug(`[BLOQUEIO] Entrada em ${symbol} negada: Trade aberto em ${activePositions[0].symbol}.`);
-        }
-        return {
-          status: 'skipped',
-          reason: 'already_has_open_position',
-          active_pair: activePositions[0].symbol
-        };
+        return { status: 'skipped', reason: 'already_has_position' };
       }
 
-      logger.info(`[EXECUTOR] Iniciando operação para ${symbol}...`);
+      // 2. BLOQUEIO ATÔMICO
+      this.isProcessingEntry = true;
 
-      if (decision.decision === 'ENTRY' || decision.decision === 'enter') {
-        // LÓGICA DE GESTÃO DE BANCA: Mínimo 5.2 USDT ou 30% da banca
+      try {
+        const now = Date.now();
+        if (this.lastProcessedSignals[symbol] && (now - this.lastProcessedSignals[symbol] < 60000)) {
+            return { status: 'skipped', reason: 'recently_processed' };
+        }
+
+        logger.info(`[EXECUTOR] Confiança confirmada (${decision.confidence}). Iniciando operação única para ${symbol}...`);
+        this.lastProcessedSignals[symbol] = now;
+
         const balance = await bybitService.getWalletBalance();
         const currentPrice = await bybitService.getTickerPrice(symbol);
 
@@ -308,10 +311,13 @@ const executorService = {
         }
 
         return { status: 'success', orderId: order.orderId };
+      } finally {
+        this.isProcessingEntry = false;
       }
 
       return { status: 'ignored', reason: 'unknown_decision' };
     } catch (error) {
+      this.isProcessingEntry = false;
       logger.error(`Failed to execute order for ${decision.coin_id}: ${error.message}`);
       throw error;
     }
