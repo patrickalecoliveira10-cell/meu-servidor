@@ -84,8 +84,8 @@ class Intelligence {
         if (typeof ind === 'object') {
           if (name.toLowerCase() === 'rsi') {
             const val = parseFloat(ind.value);
-            if (val < 30) signal = 0.8;
-            else if (val > 70) signal = -0.8;
+            if (val < 35) signal = 0.8; // Aumentado de 30 para 35
+            else if (val > 65) signal = -0.8; // Reduzido de 70 para 65
           } else if (name.toLowerCase() === 'macd') {
             const hist = parseFloat(ind.histogram || 0);
             if (hist > 0) signal = 0.6;
@@ -181,9 +181,9 @@ class Intelligence {
     }
 
     const confPercent = Math.round(confidence * 100);
-    if (confidence >= 0.70) {
+    if (confidence >= 0.65) {
         reasons.unshift(`[ENTRADA] Confiança de ${confPercent}%.`);
-    } else if (confidence >= 0.60) {
+    } else if (confidence >= 0.55) {
         reasons.push(`Aguardando confirmação (${confPercent}%).`);
     }
 
@@ -193,11 +193,11 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis, config) {
-    // Reduzido para 70% conforme solicitado para aumentar frequência de entradas
-    const entryThreshold = 0.70;
+    // Reduzido para 65% para capturar sinais fortes de sobrevenda/sobrecompra
+    const entryThreshold = 0.65;
 
     if (confidence >= entryThreshold) return 'enter';
-    if (confidence >= 0.60) return 'wait'; // Analisando possível entrada
+    if (confidence >= 0.55) return 'wait';
     return 'not_enter';
   }
 
