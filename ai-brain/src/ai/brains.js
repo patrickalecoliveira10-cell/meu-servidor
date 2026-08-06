@@ -86,16 +86,25 @@ class Brain {
       if (this.intelligence.stats && decision.decision === 'enter') {
         this.intelligence.stats.total_simulated_ops++;
       }
-      this.activeRecommendations.set(coin_id, {
-        coin_id,
-        symbol: coin_id,
-        decision: decision.decision.toUpperCase(),
-        side: decision.side,
-        confidence: decision.confidence,
-        price: decision.price,
-        stayReason: decision.stayReason,
-        timestamp: new Date()
-      });
+      // Só sobrescreve se o novo sinal for ENTER, ou se não houver sinal ENTER ativo nos últimos 60s
+      const existing = this.activeRecommendations.get(coin_id);
+      const now = new Date();
+      const isExistingEnterFresh = existing &&
+        existing.decision === 'ENTER' &&
+        (now - existing.timestamp) < 60000;
+
+      if (!isExistingEnterFresh || decision.decision === 'enter') {
+        this.activeRecommendations.set(coin_id, {
+          coin_id,
+          symbol: coin_id,
+          decision: decision.decision.toUpperCase(),
+          side: decision.side,
+          confidence: decision.confidence,
+          price: decision.price,
+          stayReason: decision.stayReason,
+          timestamp: now
+        });
+      }
 
       logger.info(`[BRAIN] Analysis for ${coin_id}: ${decision.stayReason} Confidence: ${Math.round(decision.confidence * 100)}%`);
 
