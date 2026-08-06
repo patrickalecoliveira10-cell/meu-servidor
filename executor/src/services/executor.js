@@ -185,7 +185,8 @@ const executorService = {
   },
 
   async checkAIRecommendations(cycleId = 'default') {
-    logger.info(`[DEBUG EXECUTOR] checkAIRecommendations chamado. brainInstance: ${!!this.brainInstance}`);
+    const now = new Date().toISOString();
+    logger.info(`[DEBUG EXECUTOR] checkAIRecommendations chamado em ${now}. brainInstance: ${!!this.brainInstance}`);
     try {
       let signals;
 
