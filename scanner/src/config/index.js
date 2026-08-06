@@ -35,30 +35,30 @@ const config = {
     ichimoku: process.env.INDICATORS_ICHIMOKU === 'true',
     obv: process.env.INDICATORS_OBV !== 'false',
     supertrend: process.env.INDICATORS_SUPERTREND !== 'false',
-    
+
     // EMA Periods
     emaPeriods: (process.env.EMA_PERIODS || '9,21,50,200').split(',').map(Number),
-    
+
     // RSI
     rsiPeriod: parseInt(process.env.RSI_PERIOD) || 14,
     rsiOverbought: parseInt(process.env.RSI_OVERBOUGHT) || 70,
     rsiOversold: parseInt(process.env.RSI_OVERSOLD) || 30,
-    
+
     // MACD
     macdFast: parseInt(process.env.MACD_FAST) || 12,
     macdSlow: parseInt(process.env.MACD_SLOW) || 26,
     macdSignal: parseInt(process.env.MACD_SIGNAL) || 9,
-    
+
     // ADX
     adxPeriod: parseInt(process.env.ADX_PERIOD) || 14,
-    
+
     // ATR
     atrPeriod: parseInt(process.env.ATR_PERIOD) || 14,
-    
+
     // Bollinger
     bollingerPeriod: parseInt(process.env.BOLLINGER_PERIOD) || 20,
     bollingerStdDev: parseInt(process.env.BOLLINGER_STD_DEV) || 2,
-    
+
     // Stochastic
     stochKPeriod: parseInt(process.env.STOCH_K_PERIOD) || 14,
     stochDPeriod: parseInt(process.env.STOCH_D_PERIOD) || 3,
