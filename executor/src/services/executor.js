@@ -95,22 +95,28 @@ const executorService = {
   },
 
   async monitorAndExecute() {
+    const cycleId = Math.random().toString(36).substring(5);
     try {
-      // 1. Verificar se há posição aberta na Bybit para gestão dinâmica
+      // 1. Verificar se há posição aberta na Bybit
       const allPositions = await bybitService.getPosition() || [];
       const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
+
+      logger.info(`[EXE-V2.1-SNIPER] Ciclo ${cycleId} Iniciado. Posições Ativas: ${activePositions.length}. Trava Entry: ${this.isProcessingEntry}`);
 
       if (activePositions.length > 0) {
         const pos = activePositions[0];
         await this.handleDynamicManagement(pos);
-        // Se já tem posição, não tenta abrir novas (Uma por vez)
         return;
       }
 
-      // 2. Se não houver posição, buscar recomendações da IA para entrada
-      await this.checkAIRecommendations();
+      if (this.isProcessingEntry) {
+        logger.warn(`[EXE-V2.1-SNIPER] Bloqueado: Já existe uma entrada em processamento.`);
+        return;
+      }
+
+      await this.checkAIRecommendations(cycleId);
     } catch (error) {
-      logger.error('Loop error:', error.message);
+      logger.error(`[EXE-V2.1-SNIPER] Erro no Ciclo ${cycleId}:`, error.message);
     }
   },
 
@@ -187,7 +193,7 @@ const executorService = {
     );
   },
 
-  async checkAIRecommendations() {
+  async checkAIRecommendations(cycleId = 'default') {
     try {
       let signals;
 
@@ -205,8 +211,7 @@ const executorService = {
       }
 
       if (signals && Array.isArray(signals)) {
-        // 1. ATUALIZAR MOTIVOS (stayReason) PARA TODAS AS MOEDAS
-        // Isso permite que o App mostre o que a IA está pensando sobre cada moeda
+        // 1. ATUALIZAR MOTIVOS
         for (const signal of signals) {
           const sym = (signal.coin_id || signal.symbol || '').toUpperCase();
           if (sym && signal.stayReason) {
@@ -215,20 +220,21 @@ const executorService = {
         }
 
         // 2. FILTRAR O MELHOR SINAL DE ENTRADA (Modo Sniper)
-        // Só processamos entrada se não estivermos ocupados e não houver posição
         if (!this.isProcessingEntry) {
           const entrySignals = signals
             .filter(s => (s.decision === 'enter' || s.decision === 'ENTRY') && (s.confidence >= 0.85))
             .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
           if (entrySignals.length > 0) {
-            logger.info(`[EXECUTOR] Sniper detectou ${entrySignals.length} oportunidades. Escolhendo a melhor: ${entrySignals[0].coin_id}`);
+            logger.info(`[EXECUTOR-${cycleId}] Sniper detectou ${entrySignals.length} oportunidades. Melhor: ${entrySignals[0].coin_id} (${entrySignals[0].confidence})`);
             await this.processRecommendation(entrySignals[0]);
           }
+        } else {
+            logger.warn(`[EXECUTOR-${cycleId}] Ignorando recomendações: Entrada em processamento.`);
         }
       }
     } catch (error) {
-      if (!this.brainInstance) logger.debug('AI Brain heartbeat check failed');
+      if (!this.brainInstance) logger.debug(`[EXECUTOR-${cycleId}] AI Brain heartbeat check failed`);
     }
   },
 
@@ -256,14 +262,16 @@ const executorService = {
 
       // 2. BLOQUEIO ATÔMICO
       this.isProcessingEntry = true;
+      logger.info(`[EXE-V2.1-SNIPER] ATIVANDO TRAVA para ${symbol}.`);
 
       try {
         const now = Date.now();
         if (this.lastProcessedSignals[symbol] && (now - this.lastProcessedSignals[symbol] < 60000)) {
+            logger.info(`[EXE-V2.1-SNIPER] Anti-spam ativo para ${symbol}.`);
             return { status: 'skipped', reason: 'recently_processed' };
         }
 
-        logger.info(`[EXECUTOR] Confiança confirmada (${decision.confidence}). Iniciando operação única para ${symbol}...`);
+        logger.info(`[EXE-V2.1-SNIPER] EXECUÇÃO INICIADA: ${side} ${symbol} @ 85%+ confiança.`);
         this.lastProcessedSignals[symbol] = now;
 
         const balance = await bybitService.getWalletBalance();
