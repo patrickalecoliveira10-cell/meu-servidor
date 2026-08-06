@@ -3,17 +3,11 @@ const logger = require(path.join(__dirname, '../logs/logger.js'));
 const fs = require('fs');
 let Brain;
 try {
-  const brainPath = path.join(__dirname, '../ai/brain.js');
   const brainsPath = path.join(__dirname, '../ai/brains.js');
-
-  if (fs.existsSync(brainPath)) {
-    Brain = require(brainPath);
-  } else {
-    Brain = require(brainsPath);
-  }
+  Brain = require(brainsPath);
 } catch (e) {
-  console.error("AIController: Failed to load brain.js, falling back to brains.js");
-  Brain = require(path.join(__dirname, '../ai/brains.js'));
+  console.error("AIController: Failed to load brains.js");
+  throw e;
 }
 const queries = require(path.join(__dirname, '../database/queries.js'));
 const config = require(path.join(__dirname, '../config/index.js'));
