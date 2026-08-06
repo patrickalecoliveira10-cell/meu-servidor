@@ -84,7 +84,7 @@ class Intelligence {
     if (macd) {
       const hist = parseFloat(macd.histogram ?? macd.hist ?? 0);
       const w = parseFloat(weights['MACD'] ?? weights['macd'] ?? 1.0);
-      if (hist > 0)  { bullScore += 0.7 * w; signals['macd'] = 0.7; hasConfirmation = true; }
+      if (hist > 0)      { bullScore += 0.7 * w; signals['macd'] = 0.7; hasConfirmation = true; }
       else if (hist < 0) { bearScore += 0.7 * w; signals['macd'] = -0.7; }
       totalWeight += w;
     }
@@ -94,7 +94,7 @@ class Intelligence {
     if (adx) {
       const val = parseFloat(adx.value ?? adx);
       const w = parseFloat(weights['ADX'] ?? weights['adx'] ?? 0.8);
-      if (val > 25) { bullScore += 0.5 * w; signals['adx'] = 0.5; hasConfirmation = true; }
+      if (val > 25)      { bullScore += 0.5 * w; signals['adx'] = 0.5; hasConfirmation = true; }
       else if (val < 15) { bearScore += 0.2 * w; signals['adx'] = -0.2; }
       totalWeight += w;
     }
@@ -109,7 +109,6 @@ class Intelligence {
       } else {
         bearScore += 0.8 * w; signals['ema'] = -0.8;
       }
-      // Preço acima da EMA21 = tendência de alta
       if (price > ema.ema_21) { bullScore += 0.3 * w; }
       totalWeight += w;
     }
@@ -120,7 +119,7 @@ class Intelligence {
       const price = parseFloat(indicators.close ?? 0);
       const w = parseFloat(weights['BOLLINGER'] ?? 0.7);
       if (price > 0) {
-        if (bb.position === 'below_lower' || price <= bb.lower)  { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
+        if (bb.position === 'below_lower' || price <= bb.lower)      { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
         else if (bb.position === 'above_upper' || price >= bb.upper) { bearScore += 0.9 * w; signals['bollinger'] = -0.9; }
         totalWeight += w;
       }
@@ -130,7 +129,7 @@ class Intelligence {
     const st = indicators.supertrend;
     if (st && st.signal) {
       const w = parseFloat(weights['SUPERTREND'] ?? 0.85);
-      if (st.signal === 'bullish') { bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true; }
+      if (st.signal === 'bullish')      { bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true; }
       else if (st.signal === 'bearish') { bearScore += 0.9 * w; signals['supertrend'] = -0.9; }
       totalWeight += w;
     }
@@ -139,7 +138,7 @@ class Intelligence {
     const psar = indicators.psar;
     if (psar && psar.signal) {
       const w = parseFloat(weights['PSAR'] ?? 0.7);
-      if (psar.signal === 'bullish') { bullScore += 0.7 * w; signals['psar'] = 0.7; hasConfirmation = true; }
+      if (psar.signal === 'bullish')      { bullScore += 0.7 * w; signals['psar'] = 0.7; hasConfirmation = true; }
       else if (psar.signal === 'bearish') { bearScore += 0.7 * w; signals['psar'] = -0.7; }
       totalWeight += w;
     }
@@ -150,8 +149,8 @@ class Intelligence {
       const price = parseFloat(indicators.close ?? 0);
       const w = parseFloat(weights['VWAP'] ?? 0.75);
       if (price > 0) {
-        if (price > vwap)       { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
-        else if (price < vwap)  { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
+        if (price > vwap)      { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
+        else if (price < vwap) { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
         totalWeight += w;
       }
     }
@@ -161,14 +160,10 @@ class Intelligence {
     if (stoch && stoch.k !== undefined) {
       const k = parseFloat(stoch.k);
       const w = parseFloat(weights['STOCHASTIC'] ?? 0.6);
-      if (stoch.signal === 'oversold' || k < 20)       { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
+      if (stoch.signal === 'oversold' || k < 20)        { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
       else if (stoch.signal === 'overbought' || k > 80) { bearScore += 0.7 * w; signals['stochastic'] = -0.7; }
       totalWeight += w;
     }
-
-    // ── OBV ── número direto (compara com média simples dos últimos valores) ───
-    // OBV sozinho não dá direção sem histórico, então ignoramos como sinal isolado
-    // mas registramos para o sistema de pesos aprender
 
     // ── CÁLCULO FINAL ─────────────────────────────────────────────────────────
     const netScore = totalWeight > 0 ? (bullScore - bearScore) / totalWeight : 0;
@@ -189,53 +184,39 @@ class Intelligence {
 
   evaluateSetup(indicators) {
     let quality = 0.5;
-    const rsi = indicators.rsi || indicators.RSI;
-    const macd = indicators.macd || indicators.MACD;
-    const ema = indicators.ema || indicators.EMA;
-    const bb = indicators.bollinger || indicators.BOLLINGER || indicators.bb;
-    const st = indicators.supertrend || indicators.SUPERTREND;
+    const rsi = indicators.rsi;
+    const macd = indicators.macd;
+    const ema = indicators.ema;
+    const bb = indicators.bollinger;
+    const st = indicators.supertrend;
+    const psar = indicators.psar;
+    const stoch = indicators.stochastic;
 
     if (rsi) {
       const rv = parseFloat(rsi.value ?? rsi);
       if (rv < 35 || rv > 65) quality += 0.1;
     }
-    if (macd && Math.abs(parseFloat(macd.histogram ?? 0)) > 0) quality += 0.1;
+    if (macd && parseFloat(macd.histogram ?? 0) > 0) quality += 0.1;
     if (ema && ema.ema_9 && ema.ema_21 && ema.ema_9 > ema.ema_21) quality += 0.1;
-    if (bb) {
-      const price = parseFloat(indicators.price ?? 0);
-      const lower = parseFloat(bb.lower ?? bb.lowerBand ?? 0);
-      if (price > 0 && lower > 0 && price <= lower) quality += 0.15;
-    }
-    if (st && (st.direction === 1 || st.trend === 'up' || st.trend === 'UP')) quality += 0.1;
+    if (bb && bb.position === 'below_lower') quality += 0.15;
+    if (st && st.signal === 'bullish') quality += 0.1;
+    if (psar && psar.signal === 'bullish') quality += 0.05;
+    if (stoch && (stoch.signal === 'oversold' || parseFloat(stoch.k ?? 50) < 20)) quality += 0.1;
 
     return Math.min(1, quality);
   }
 
   evaluateTrend(indicators) {
-    const adx = indicators.adx || indicators.ADX;
-    const st = indicators.supertrend || indicators.SUPERTREND;
-    const ichi = indicators.ichimoku || indicators.ICHIMOKU;
+    const adx = indicators.adx;
+    const st = indicators.supertrend;
+    const ema = indicators.ema;
 
     let trendScore = 0;
     let count = 0;
 
-    if (adx) {
-      trendScore += Math.min(1, parseFloat(adx.value ?? 0) / 50);
-      count++;
-    }
-    if (st) {
-      trendScore += (st.direction === 1 || st.trend === 'up') ? 0.8 : 0.2;
-      count++;
-    }
-    if (ichi) {
-      const price = parseFloat(indicators.price ?? 0);
-      const spanA = parseFloat(ichi.span_a ?? ichi.senkouA ?? 0);
-      const spanB = parseFloat(ichi.span_b ?? ichi.senkouB ?? 0);
-      if (price > 0 && spanA > 0) {
-        trendScore += price > Math.max(spanA, spanB) ? 0.9 : 0.3;
-        count++;
-      }
-    }
+    if (adx) { trendScore += Math.min(1, parseFloat(adx.value ?? 0) / 50); count++; }
+    if (st && st.signal) { trendScore += st.signal === 'bullish' ? 0.8 : 0.2; count++; }
+    if (ema && ema.ema_9 && ema.ema_21) { trendScore += ema.ema_9 > ema.ema_21 ? 0.7 : 0.3; count++; }
 
     return count > 0 ? trendScore / count : 0.5;
   }
@@ -245,11 +226,12 @@ class Intelligence {
   }
 
   generateStayReason(indicators, confidence, analysis) {
-    const rsi = indicators.rsi || indicators.RSI;
-    const adx = indicators.adx || indicators.ADX;
-    const macd = indicators.macd || indicators.MACD;
-    const st = indicators.supertrend || indicators.SUPERTREND;
-    const bb = indicators.bollinger || indicators.BOLLINGER || indicators.bb;
+    const rsi = indicators.rsi;
+    const adx = indicators.adx;
+    const macd = indicators.macd;
+    const st = indicators.supertrend;
+    const bb = indicators.bollinger;
+    const psar = indicators.psar;
 
     let reasons = [];
 
@@ -259,30 +241,21 @@ class Intelligence {
       else if (val < 35) reasons.push(`RSI em ${val.toFixed(0)} (Sobrevendido).`);
       else               reasons.push(`RSI estável (${val.toFixed(0)}).`);
     }
-
-    if (adx) {
-      const val = parseFloat(adx.value ?? adx);
-      if (val > 25)      reasons.push('Tendência forte (ADX).');
-      else if (val < 15) reasons.push('Mercado lateral (ADX).');
-    }
-
     if (macd) {
-      const hist = parseFloat(macd.histogram ?? macd.hist ?? 0);
+      const hist = parseFloat(macd.histogram ?? 0);
       if (hist > 0)      reasons.push('MACD bullish.');
       else if (hist < 0) reasons.push('MACD bearish.');
     }
-
-    if (st) {
-      if (st.direction === 1 || st.trend === 'up' || st.trend === 'UP') reasons.push('Supertrend: alta.');
-      else if (st.direction === -1 || st.trend === 'down')               reasons.push('Supertrend: baixa.');
+    if (adx) {
+      const val = parseFloat(adx.value ?? 0);
+      if (val > 25)      reasons.push(`ADX ${val.toFixed(0)} (tendência forte).`);
+      else if (val < 15) reasons.push('ADX fraco (lateral).');
     }
-
-    if (bb) {
-      const price = parseFloat(indicators.price ?? 0);
-      const lower = parseFloat(bb.lower ?? bb.lowerBand ?? 0);
-      const upper = parseFloat(bb.upper ?? bb.upperBand ?? 0);
-      if (price > 0 && lower > 0 && price <= lower)  reasons.push('Preço na banda inferior (BB).');
-      else if (price > 0 && upper > 0 && price >= upper) reasons.push('Preço na banda superior (BB).');
+    if (st && st.signal) reasons.push(`Supertrend: ${st.signal}.`);
+    if (psar && psar.signal) reasons.push(`PSAR: ${psar.signal}.`);
+    if (bb && bb.position) {
+      if (bb.position === 'below_lower')  reasons.push('Preço abaixo da banda inferior (BB).');
+      else if (bb.position === 'above_upper') reasons.push('Preço acima da banda superior (BB).');
     }
 
     const confPercent = Math.round(confidence * 100);
@@ -297,7 +270,6 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis) {
-    // Exige: confiança >= 68% + side=buy + pelo menos 1 confirmação (MACD/ADX/EMA/Supertrend/Ichimoku/BB)
     if (confidence >= 0.68 && analysis.side === 'buy' && analysis.hasConfirmation) return 'enter';
     if (confidence >= 0.55) return 'wait';
     return 'not_enter';
