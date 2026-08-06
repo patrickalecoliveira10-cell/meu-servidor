@@ -237,6 +237,44 @@ class AIController {
     }
   }
 
+  // Retorna a operação ativa com dados dinâmicos para o Gráfico no App
+  async getActiveTrade(req, res) {
+    try {
+      // Busca no banco a operação que está status = 'OPEN'
+      const result = await db.query(
+        "SELECT * FROM trading_ai.operations WHERE status = 'OPEN' ORDER BY opened_at DESC LIMIT 1"
+      );
+
+      if (result.rows.length === 0) {
+        return sendResponse(res, true, null, "Nenhuma operação ativa.");
+      }
+
+      const op = result.rows[0];
+
+      // Formata os valores para o App Android (Kotlin)
+      sendResponse(res, true, {
+        symbol: op.symbol,
+        side: op.side,
+        entryPrice: parseFloat(op.entry_price) / 10000000000,
+        currentStopLoss: op.stop_loss ? parseFloat(op.stop_loss) / 10000000000 : null,
+        currentTakeProfit: op.take_profit ? parseFloat(op.take_profit) / 10000000000 : null,
+        trailingStop: op.trailing_stop ? parseFloat(op.trailing_stop) / 100 : null,
+        partialExits: op.partial_exit_done ? 1 : 0,
+        partialEntries: op.partial_entry_count || 0,
+        aiAnalysis: op.last_analysis || "IA analisando movimentação...",
+        openedAt: op.opened_at,
+        // Coordenadas para o gráfico desenhar as linhas
+        chartMarkers: {
+            stopLine: op.stop_loss ? parseFloat(op.stop_loss) / 10000000000 : null,
+            trailingLine: op.trailing_stop ? "ATIVO" : "INATIVO",
+            entryPoints: [parseFloat(op.entry_price) / 10000000000]
+        }
+      });
+    } catch (error) {
+      sendResponse(res, false, null, error.message, 500);
+    }
+  }
+
   async getRecentDecisions(req, res) {
     try {
       const limit = parseInt(req.query.limit) || 20;
