@@ -6,7 +6,7 @@ const queries = require('../database/queries.js');
 
 class Brain {
   constructor() {
-    this.weights = { global: {}, coins: {} };
+    this.weights = { global: { 'RSI': 1.0, 'MACD': 1.0, 'ADX': 0.8 }, coins: {} };
     this.config = { confidence_threshold: 0.7 };
     this.activeRecommendations = new Map();
   }
@@ -44,7 +44,13 @@ class Brain {
       // 2. Simular para histórico
       await Simulation.run(snapshot, decision);
 
-      // 3. Manter na memória para o Executor buscar (sempre atualiza o stayReason)
+      // Incrementar contador local para atualização imediata no App
+      if (Intelligence.stats) {
+        Intelligence.stats.total_snapshots++;
+        if (decision.decision === 'enter') {
+          Intelligence.stats.total_simulated_ops++;
+        }
+      }
       this.activeRecommendations.set(coin_id, {
         coin_id,
         symbol: coin_id,
@@ -65,7 +71,7 @@ class Brain {
   }
 
   getRecommendations() {
-    // Aumentado para 5 minutos para garantir sincronia com o App
+    // Retenção de 5 minutos para garantir que o App sempre tenha dados
     const now = new Date();
     for (const [id, rec] of this.activeRecommendations.entries()) {
       if (now - rec.timestamp > 300000) {
@@ -78,7 +84,7 @@ class Brain {
   getStatus() {
     return {
       recommendationsCount: this.activeRecommendations.size,
-      threshold: this.config.confidence_threshold,
+      threshold: this.config.threshold || this.config.confidence_threshold,
       mode: 'CONTINUOUS_LEARNING',
       initialized: true,
       current_examples_count: Intelligence.stats ? Intelligence.stats.total_snapshots : 0,
