@@ -13,12 +13,12 @@ class Intelligence {
   async init(brain) {
     this.brain = brain;
     try {
-        const live = await queries.getLiveStats();
-        this.stats.total_snapshots = parseInt(live.ai_examples || 0);
-        this.stats.total_simulated_ops = parseInt(live.total_simulated_ops || 0);
-        logger.info(`[INTEL] Recuperados do banco: ${this.stats.total_snapshots} snapshots e ${this.stats.total_simulated_ops} simulações.`);
+      const live = await queries.getLiveStats();
+      this.stats.total_snapshots = parseInt(live.ai_examples || 0);
+      this.stats.total_simulated_ops = parseInt(live.total_simulated_ops || 0);
+      logger.info(`[INTEL] Recuperados do banco: ${this.stats.total_snapshots} snapshots e ${this.stats.total_simulated_ops} simulações.`);
     } catch(e) {
-        logger.error('Erro ao carregar stats iniciais na Intelligence:', e);
+      logger.error('Erro ao carregar stats iniciais na Intelligence:', e);
     }
     logger.info('Intelligence module initialized');
   }
@@ -28,35 +28,23 @@ class Intelligence {
       this.stats.total_snapshots++;
       const { coin_id, timeframe, indicators } = snapshot;
 
-      // 1. Get relevant weights
-      const currentWeights = weights.coins[coin_id] || weights.global;
-
-      // 2. Calculate probabilities with smart indicator mapping
+      const currentWeights = weights.coins?.[coin_id] || weights.global;
       const analysis = this.calculateProbabilities(indicators || {}, currentWeights);
-
-      // 3. Evaluate Setup & Trend
       const setupQuality = this.evaluateSetup(indicators || {});
       const trendStrength = this.evaluateTrend(indicators || {});
-
-      // 4. Calculate Final Confidence
       const confidence = this.calculateConfidence(analysis, setupQuality, trendStrength);
-
-      // 5. Generate Human Reason for Android App
       const stayReason = this.generateStayReason(indicators || {}, confidence, analysis);
-
-      // 6. Determine Decision
-      const decisionResult = this.determineDecision(confidence, analysis, config);
-
+      const decisionResult = this.determineDecision(confidence, analysis);
       const price = parseFloat(snapshot.price || snapshot.close || 0);
 
       return {
         coin_id,
         timeframe,
         decision: decisionResult,
-        price: price,
-        side: analysis.winProbability > 0.5 ? 'buy' : 'sell',
+        price,
+        side: analysis.side,
         confidence,
-        stayReason, // Agora enviando o motivo real
+        stayReason,
         win_probability: analysis.winProbability,
         loss_probability: analysis.lossProbability,
         risk: analysis.riskRatio,
@@ -72,58 +60,163 @@ class Intelligence {
   }
 
   calculateProbabilities(indicators, weights) {
-    let score = 0;
+    let bullScore = 0;
+    let bearScore = 0;
     let totalWeight = 0;
+    let hasConfirmation = false;
+    const signals = {};
 
-    for (const [name, weight] of Object.entries(weights)) {
-      const ind = indicators[name.toLowerCase()] || indicators[name.toUpperCase()];
-      if (ind) {
-        let signal = 0;
+    // ── RSI ──────────────────────────────────────────────────────────────────
+    const rsi = indicators.rsi || indicators.RSI;
+    if (rsi) {
+      const val = parseFloat(rsi.value ?? rsi);
+      const w = parseFloat(weights['RSI'] ?? weights['rsi'] ?? 1.0);
+      if (val < 30)       { bullScore += 1.0 * w; signals['rsi'] = 1.0; }
+      else if (val < 40)  { bullScore += 0.5 * w; signals['rsi'] = 0.5; }
+      else if (val > 70)  { bearScore += 1.0 * w; signals['rsi'] = -1.0; }
+      else if (val > 60)  { bearScore += 0.5 * w; signals['rsi'] = -0.5; }
+      else                { signals['rsi'] = 0; }
+      totalWeight += w;
+    }
 
-        // Se for um objeto retornado pelo IndicatorsCalculator
-        if (typeof ind === 'object') {
-          if (name.toLowerCase() === 'rsi') {
-            const val = parseFloat(ind.value);
-            if (val < 35) signal = 0.8; // Aumentado de 30 para 35
-            else if (val > 65) signal = -0.8; // Reduzido de 70 para 65
-          } else if (name.toLowerCase() === 'macd') {
-            const hist = parseFloat(ind.histogram || 0);
-            if (hist > 0) signal = 0.6;
-            else if (hist < 0) signal = -0.6;
-            else signal = 0; // Neutral
-          } else if (name.toLowerCase() === 'adx') {
-            const adxVal = parseFloat(ind.value || 0);
-            signal = (adxVal > 25) ? 0.5 : (adxVal < 15 ? -0.2 : 0);
-          } else if (ind.signal !== undefined) {
-             // Fallback para sinais numéricos se existirem
-             const s = parseFloat(ind.signal);
-             if (!isNaN(s)) signal = s;
-          }
-        } else {
-          // Fallback para valor numérico direto
-          const val = parseFloat(ind);
-          if (name.toLowerCase() === 'rsi') {
-            if (val < 35) signal = 0.8;
-            else if (val > 65) signal = -0.8;
-          }
-        }
+    // ── MACD ─────────────────────────────────────────────────────────────────
+    const macd = indicators.macd || indicators.MACD;
+    if (macd) {
+      const hist = parseFloat(macd.histogram ?? macd.hist ?? 0);
+      const w = parseFloat(weights['MACD'] ?? weights['macd'] ?? 1.0);
+      if (hist > 0)  { bullScore += 0.7 * w; signals['macd'] = 0.7; hasConfirmation = true; }
+      else if (hist < 0) { bearScore += 0.7 * w; signals['macd'] = -0.7; }
+      totalWeight += w;
+    }
 
-        score += signal * parseFloat(weight);
-        totalWeight += parseFloat(weight);
+    // ── ADX ──────────────────────────────────────────────────────────────────
+    const adx = indicators.adx || indicators.ADX;
+    if (adx) {
+      const val = parseFloat(adx.value ?? adx);
+      const w = parseFloat(weights['ADX'] ?? weights['adx'] ?? 0.8);
+      if (val > 25) { bullScore += 0.5 * w; signals['adx'] = 0.5; hasConfirmation = true; }
+      else if (val < 15) { bearScore += 0.2 * w; signals['adx'] = -0.2; }
+      totalWeight += w;
+    }
+
+    // ── EMA (cruzamento 9/21) ─────────────────────────────────────────────────
+    const ema = indicators.ema || indicators.EMA;
+    if (ema && ema.ema_9 && ema.ema_21) {
+      const w = parseFloat(weights['EMA'] ?? weights['ema'] ?? 0.9);
+      const price = parseFloat(indicators.price ?? ema.ema_9);
+      if (ema.ema_9 > ema.ema_21) {
+        bullScore += 0.8 * w; signals['ema'] = 0.8; hasConfirmation = true;
+      } else {
+        bearScore += 0.8 * w; signals['ema'] = -0.8;
+      }
+      // Preço acima da EMA21 = tendência de alta
+      if (price > ema.ema_21) { bullScore += 0.3 * w; }
+      totalWeight += w;
+    }
+
+    // ── BOLLINGER BANDS ───────────────────────────────────────────────────────
+    const bb = indicators.bollinger || indicators.BOLLINGER || indicators.bb;
+    if (bb) {
+      const price = parseFloat(indicators.price ?? snapshot?.close ?? 0);
+      const lower = parseFloat(bb.lower ?? bb.lowerBand ?? 0);
+      const upper = parseFloat(bb.upper ?? bb.upperBand ?? 0);
+      const w = parseFloat(weights['BOLLINGER'] ?? weights['bollinger'] ?? 0.7);
+      if (price > 0 && lower > 0 && upper > 0) {
+        if (price <= lower)       { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
+        else if (price >= upper)  { bearScore += 0.9 * w; signals['bollinger'] = -0.9; }
+        totalWeight += w;
       }
     }
 
-    const normalizedScore = totalWeight > 0 ? score / totalWeight : 0;
-    const winProbability = Math.max(0.1, Math.min(0.9, (normalizedScore + 1) / 2));
-
-    // Ajuste fino: RSI extremo sobrevendido garante sinal de compra forte
-    const rsiObj = indicators.rsi || indicators.RSI;
-    if (rsiObj && typeof rsiObj === 'object') {
-        const rv = parseFloat(rsiObj.value);
-        if (rv < 35) return { winProbability: Math.max(winProbability, 0.75), lossProbability: 0.25, riskRatio: 2.0, side: 'buy' };
+    // ── SUPERTREND ────────────────────────────────────────────────────────────
+    const st = indicators.supertrend || indicators.SUPERTREND;
+    if (st) {
+      const direction = parseInt(st.direction ?? st.signal ?? 0);
+      const w = parseFloat(weights['SUPERTREND'] ?? weights['supertrend'] ?? 0.85);
+      if (direction === 1 || st.trend === 'up' || st.trend === 'UP') {
+        bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true;
+      } else if (direction === -1 || st.trend === 'down' || st.trend === 'DOWN') {
+        bearScore += 0.9 * w; signals['supertrend'] = -0.9;
+      }
+      totalWeight += w;
     }
 
-    return { winProbability, lossProbability: 1 - winProbability, riskRatio: 2.0, side: winProbability > 0.5 ? 'buy' : null };
+    // ── VWAP ──────────────────────────────────────────────────────────────────
+    const vwap = indicators.vwap || indicators.VWAP;
+    if (vwap) {
+      const price = parseFloat(indicators.price ?? 0);
+      const vwapVal = parseFloat(vwap.value ?? vwap);
+      const w = parseFloat(weights['VWAP'] ?? weights['vwap'] ?? 0.75);
+      if (price > 0 && vwapVal > 0) {
+        if (price > vwapVal)       { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
+        else if (price < vwapVal)  { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
+        totalWeight += w;
+      }
+    }
+
+    // ── STOCHASTIC ────────────────────────────────────────────────────────────
+    const stoch = indicators.stochastic || indicators.STOCHASTIC;
+    if (stoch) {
+      const k = parseFloat(stoch.k ?? stoch.value ?? 50);
+      const w = parseFloat(weights['STOCHASTIC'] ?? weights['stochastic'] ?? 0.6);
+      if (k < 20)      { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
+      else if (k > 80) { bearScore += 0.7 * w; signals['stochastic'] = -0.7; }
+      totalWeight += w;
+    }
+
+    // ── ICHIMOKU ──────────────────────────────────────────────────────────────
+    const ichi = indicators.ichimoku || indicators.ICHIMOKU;
+    if (ichi) {
+      const price = parseFloat(indicators.price ?? 0);
+      const spanA = parseFloat(ichi.span_a ?? ichi.senkouA ?? 0);
+      const spanB = parseFloat(ichi.span_b ?? ichi.senkouB ?? 0);
+      const w = parseFloat(weights['ICHIMOKU'] ?? weights['ichimoku'] ?? 0.8);
+      if (price > 0 && spanA > 0 && spanB > 0) {
+        const cloudTop = Math.max(spanA, spanB);
+        const cloudBot = Math.min(spanA, spanB);
+        if (price > cloudTop)      { bullScore += 0.8 * w; signals['ichimoku'] = 0.8; hasConfirmation = true; }
+        else if (price < cloudBot) { bearScore += 0.8 * w; signals['ichimoku'] = -0.8; }
+        totalWeight += w;
+      }
+    }
+
+    // ── HEIKEN ASHI ───────────────────────────────────────────────────────────
+    const ha = indicators.heiken_ashi || indicators.HEIKEN_ASHI || indicators.heikenAshi;
+    if (ha) {
+      const w = parseFloat(weights['HEIKEN_ASHI'] ?? weights['heiken_ashi'] ?? 0.65);
+      if (ha.trend === 'up' || ha.color === 'green' || ha.bullish === true) {
+        bullScore += 0.6 * w; signals['heiken_ashi'] = 0.6;
+      } else if (ha.trend === 'down' || ha.color === 'red' || ha.bullish === false) {
+        bearScore += 0.6 * w; signals['heiken_ashi'] = -0.6;
+      }
+      totalWeight += w;
+    }
+
+    // ── OBV (On Balance Volume) ───────────────────────────────────────────────
+    const obv = indicators.obv || indicators.OBV;
+    if (obv) {
+      const trend = obv.trend ?? obv.signal;
+      const w = parseFloat(weights['OBV'] ?? weights['obv'] ?? 0.6);
+      if (trend === 'up' || trend === 1)        { bullScore += 0.5 * w; signals['obv'] = 0.5; }
+      else if (trend === 'down' || trend === -1) { bearScore += 0.5 * w; signals['obv'] = -0.5; }
+      totalWeight += w;
+    }
+
+    // ── CÁLCULO FINAL ─────────────────────────────────────────────────────────
+    const netScore = totalWeight > 0 ? (bullScore - bearScore) / totalWeight : 0;
+    const winProbability = Math.max(0.1, Math.min(0.9, (netScore + 1) / 2));
+
+    // Só entra em BUY — nunca em SELL
+    const side = winProbability >= 0.65 ? 'buy' : null;
+
+    return {
+      winProbability,
+      lossProbability: 1 - winProbability,
+      riskRatio: 2.0,
+      side,
+      hasConfirmation,
+      signals
+    };
   }
 
   evaluateSetup(indicators) {
@@ -131,29 +224,52 @@ class Intelligence {
     const rsi = indicators.rsi || indicators.RSI;
     const macd = indicators.macd || indicators.MACD;
     const ema = indicators.ema || indicators.EMA;
+    const bb = indicators.bollinger || indicators.BOLLINGER || indicators.bb;
+    const st = indicators.supertrend || indicators.SUPERTREND;
 
-    if (rsi && rsi.value) {
-      const rv = rsi.value;
-      if (rv < 40 || rv > 60) quality += 0.1;
+    if (rsi) {
+      const rv = parseFloat(rsi.value ?? rsi);
+      if (rv < 35 || rv > 65) quality += 0.1;
     }
-
-    if (macd && Math.abs(macd.histogram) > 0) quality += 0.1;
-
-    // Cruzamento de EMA se disponível
-    if (ema && ema.ema_9 && ema.ema_21) {
-       if (ema.ema_9 > ema.ema_21) quality += 0.1;
+    if (macd && Math.abs(parseFloat(macd.histogram ?? 0)) > 0) quality += 0.1;
+    if (ema && ema.ema_9 && ema.ema_21 && ema.ema_9 > ema.ema_21) quality += 0.1;
+    if (bb) {
+      const price = parseFloat(indicators.price ?? 0);
+      const lower = parseFloat(bb.lower ?? bb.lowerBand ?? 0);
+      if (price > 0 && lower > 0 && price <= lower) quality += 0.15;
     }
+    if (st && (st.direction === 1 || st.trend === 'up' || st.trend === 'UP')) quality += 0.1;
 
     return Math.min(1, quality);
   }
 
   evaluateTrend(indicators) {
     const adx = indicators.adx || indicators.ADX;
+    const st = indicators.supertrend || indicators.SUPERTREND;
+    const ichi = indicators.ichimoku || indicators.ICHIMOKU;
+
+    let trendScore = 0;
+    let count = 0;
+
     if (adx) {
-      const val = parseFloat(adx.value || 0);
-      return Math.min(1, val / 50); // ADX 50 é tendência muito forte
+      trendScore += Math.min(1, parseFloat(adx.value ?? 0) / 50);
+      count++;
     }
-    return 0.5;
+    if (st) {
+      trendScore += (st.direction === 1 || st.trend === 'up') ? 0.8 : 0.2;
+      count++;
+    }
+    if (ichi) {
+      const price = parseFloat(indicators.price ?? 0);
+      const spanA = parseFloat(ichi.span_a ?? ichi.senkouA ?? 0);
+      const spanB = parseFloat(ichi.span_b ?? ichi.senkouB ?? 0);
+      if (price > 0 && spanA > 0) {
+        trendScore += price > Math.max(spanA, spanB) ? 0.9 : 0.3;
+        count++;
+      }
+    }
+
+    return count > 0 ? trendScore / count : 0.5;
   }
 
   calculateConfidence(analysis, setupQuality, trendStrength) {
@@ -164,51 +280,61 @@ class Intelligence {
     const rsi = indicators.rsi || indicators.RSI;
     const adx = indicators.adx || indicators.ADX;
     const macd = indicators.macd || indicators.MACD;
+    const st = indicators.supertrend || indicators.SUPERTREND;
+    const bb = indicators.bollinger || indicators.BOLLINGER || indicators.bb;
 
     let reasons = [];
 
     if (rsi) {
-      const val = parseFloat(rsi.value || rsi);
-      if (val > 65) reasons.push(`RSI em ${val.toFixed(0)} (Sobrecomprado/Topo).`);
-      else if (val < 35) reasons.push(`RSI em ${val.toFixed(0)} (Sobrevendido/Fundo).`);
-      else reasons.push(`RSI em zona neutra (${val.toFixed(0)}).`);
+      const val = parseFloat(rsi.value ?? rsi);
+      if (val > 65)      reasons.push(`RSI em ${val.toFixed(0)} (Sobrecomprado).`);
+      else if (val < 35) reasons.push(`RSI em ${val.toFixed(0)} (Sobrevendido).`);
+      else               reasons.push(`RSI estável (${val.toFixed(0)}).`);
     }
 
     if (adx) {
-      const val = parseFloat(adx.value || adx);
-      if (val > 25) reasons.push("Tendência direcional forte confirmada.");
-      else if (val < 15) reasons.push("Baixa volatilidade/Mercado lateral.");
-      else reasons.push("Consolidação detectada.");
+      const val = parseFloat(adx.value ?? adx);
+      if (val > 25)      reasons.push('Tendência forte (ADX).');
+      else if (val < 15) reasons.push('Mercado lateral (ADX).');
     }
 
     if (macd) {
-      const hist = parseFloat(macd.histogram || macd.hist || 0);
-      if (hist > 0) reasons.push("Momentum de alta (MACD Hist > 0).");
-      else if (hist < 0) reasons.push("Momentum de baixa (MACD Hist < 0).");
+      const hist = parseFloat(macd.histogram ?? macd.hist ?? 0);
+      if (hist > 0)      reasons.push('MACD bullish.');
+      else if (hist < 0) reasons.push('MACD bearish.');
+    }
+
+    if (st) {
+      if (st.direction === 1 || st.trend === 'up' || st.trend === 'UP') reasons.push('Supertrend: alta.');
+      else if (st.direction === -1 || st.trend === 'down')               reasons.push('Supertrend: baixa.');
+    }
+
+    if (bb) {
+      const price = parseFloat(indicators.price ?? 0);
+      const lower = parseFloat(bb.lower ?? bb.lowerBand ?? 0);
+      const upper = parseFloat(bb.upper ?? bb.upperBand ?? 0);
+      if (price > 0 && lower > 0 && price <= lower)  reasons.push('Preço na banda inferior (BB).');
+      else if (price > 0 && upper > 0 && price >= upper) reasons.push('Preço na banda superior (BB).');
     }
 
     const confPercent = Math.round(confidence * 100);
-    if (confidence >= 0.65) {
-        reasons.unshift(`[ENTRADA] Confiança de ${confPercent}%.`);
+    if (confidence >= 0.68) {
+      reasons.unshift(`[ENTRADA] Confiança de ${confPercent}%.`);
     } else if (confidence >= 0.55) {
-        reasons.push(`Aguardando confirmação (${confPercent}%).`);
+      reasons.push(`Aguardando confirmação (${confPercent}%).`);
     }
 
-    if (reasons.length === 0) reasons.push("Monitorando fluxo de ordens.");
-
-    return reasons.join(" ");
+    if (reasons.length === 0) reasons.push('Monitorando mercado.');
+    return reasons.join(' ');
   }
 
-  determineDecision(confidence, analysis, config) {
-    // Reduzido para 65% para capturar sinais fortes de sobrevenda/sobrecompra
-    const entryThreshold = 0.65;
-
-    if (confidence >= entryThreshold) return 'enter';
+  determineDecision(confidence, analysis) {
+    // Exige: confiança >= 68% + side=buy + pelo menos 1 confirmação (MACD/ADX/EMA/Supertrend/Ichimoku/BB)
+    if (confidence >= 0.68 && analysis.side === 'buy' && analysis.hasConfirmation) return 'enter';
     if (confidence >= 0.55) return 'wait';
     return 'not_enter';
   }
 
-  // Analisa uma posição aberta e decide manobras dinâmicas
   analyzeLivePosition(snapshot, position) {
     const rsi = snapshot.indicators?.rsi?.value || 50;
     const adx = snapshot.indicators?.adx?.value || 20;
@@ -216,55 +342,40 @@ class Intelligence {
     const entryPrice = parseFloat(position.entry_price);
 
     const profitPct = position.side === 'Buy' || position.side === 'buy'
-        ? ((currentPrice - entryPrice) / entryPrice) * 100
-        : ((entryPrice - currentPrice) / entryPrice) * 100;
+      ? ((currentPrice - entryPrice) / entryPrice) * 100
+      : ((entryPrice - currentPrice) / entryPrice) * 100;
 
     let reason = `Lucro: ${profitPct.toFixed(2)}%. RSI: ${rsi.toFixed(0)}. ADX: ${adx.toFixed(0)}.`;
+    let decision = { action: 'hold', reason: `${reason} Posição estável, monitorando...`, params: {} };
 
-    let decision = {
-        action: 'hold',
-        reason: `${reason} Posição estável, monitorando...`,
-        params: {}
-    };
-
-    // 1. SAÍDA PARCIAL (Proteger Lucro)
     if (profitPct >= 2.0 && !position.partial_exit_done) {
-        decision.action = 'partial_exit';
-        decision.params = { percent: 0.5 };
-        decision.reason = `${reason} Alvo de 2% atingido. Realizando parcial de 50%.`;
-        return decision;
+      decision.action = 'partial_exit';
+      decision.params = { percent: 0.5 };
+      decision.reason = `${reason} Alvo de 2% atingido. Realizando parcial de 50%.`;
+      return decision;
     }
-
-    // 2. TRAILING STOP (Maximizar Lucro)
     if (profitPct >= 1.5) {
-        decision.action = 'activate_trailing';
-        // Calcula o recuo de 0.5% em valor absoluto baseado no preço atual
-        const distance = (currentPrice * 0.005).toFixed(8);
-        decision.params = { trailing_stop: distance };
-        decision.reason = "Lucro expressivo detectado. Ativando Trailing Stop para acompanhar a subida.";
-        return decision;
+      decision.action = 'activate_trailing';
+      decision.params = { trailing_stop: (currentPrice * 0.005).toFixed(8) };
+      decision.reason = 'Lucro expressivo. Ativando Trailing Stop.';
+      return decision;
     }
-
-    // 3. ENTRADA PARCIAL (Aumentar aposta se promissor)
     if (profitPct > 0.5 && profitPct < 1.0 && adx > 25 && (position.partial_entry_count || 0) < 2) {
-        decision.action = 'partial_entry';
-        decision.reason = "Tendência forte confirmada. Realizando entrada parcial para maximizar retorno.";
-        return decision;
+      decision.action = 'partial_entry';
+      decision.reason = 'Tendência forte. Realizando entrada parcial.';
+      return decision;
     }
-
-    // 4. GESTÃO DE LOSS (Reduzir Stop se reverter)
     if (profitPct < -1.0) {
-        if (rsi > 60 && position.side === 'buy') {
-            decision.action = 'move_stop';
-            decision.params = { new_stop: entryPrice * 0.992 }; // Encurta o stop
-            decision.reason = "Sinais de reversão contra a posição. Encurtando stop para minimizar perda.";
-        } else if (rsi < 40 && position.side === 'buy') {
-            decision.action = 'move_stop';
-            decision.params = { new_stop: entryPrice * 0.97 }; // Dá mais espaço se for só um susto
-            decision.reason = "Pullback saudável detectado. Ajustando stop para evitar violinada.";
-        }
+      if (rsi > 60 && position.side === 'buy') {
+        decision.action = 'move_stop';
+        decision.params = { new_stop: entryPrice * 0.992 };
+        decision.reason = 'Sinais de reversão. Encurtando stop.';
+      } else if (rsi < 40 && position.side === 'buy') {
+        decision.action = 'move_stop';
+        decision.params = { new_stop: entryPrice * 0.97 };
+        decision.reason = 'Pullback detectado. Ajustando stop.';
+      }
     }
-
     return decision;
   }
 
