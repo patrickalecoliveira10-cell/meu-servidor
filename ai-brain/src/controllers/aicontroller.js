@@ -1,16 +1,18 @@
 const path = require('path');
 const logger = require(path.join(__dirname, '../logs/logger.js'));
 const fs = require('fs');
-let Brain;
-try {
-  const brainsPath = path.join(__dirname, '../ai/brains.js');
-  Brain = require(brainsPath);
-} catch (e) {
-  console.error("AIController: Failed to load brains.js");
-  throw e;
-}
+
+// No longer requiring Brain at top level to support the unified instance properly
+let Brain = null;
+
 const queries = require(path.join(__dirname, '../database/queries.js'));
 const config = require(path.join(__dirname, '../config/index.js'));
+const db = require(path.join(__dirname, '../database/connection.js'));
+
+// Internal helper to get the active brain instance
+const getBrain = () => {
+    return global.liveBrainInstance || Brain || (Brain = require('../ai/brains.js'));
+};
 
 // Função auxiliar para padronizar respostas e evitar crashes no Android
 const sendResponse = (res, success, data = null, message = null, statusCode = 200) => {
@@ -32,7 +34,8 @@ const defaultStats = {
 class AIController {
   async getStatus(req, res) {
     try {
-      const status = Brain.getStatus();
+      const activeBrain = getBrain();
+      const status = activeBrain.getStatus();
       const mem = process.memoryUsage();
 
       // ESTRUTURA EXATA PARA ServerInfo.kt
@@ -58,13 +61,14 @@ class AIController {
   // Resolve o erro 404/500 no App
   async controlStatus(req, res) {
     try {
+      const activeBrain = getBrain();
       const { action } = req.body || req.query || {};
       logger.info(`AI Control action: ${action || 'PING'}`);
 
       sendResponse(res, true, {
-        status: Brain.getStatus().mode,
+        status: activeBrain.getStatus().mode,
         actionExecuted: action || 'PING',
-        isOperational: Brain.getStatus().mode === 'operational'
+        isOperational: activeBrain.getStatus().mode === 'operational'
       }, `AI Brain ${action || 'PING'} successful`);
     } catch (error) {
       logger.error('Error in controlStatus:', error);
@@ -125,11 +129,11 @@ class AIController {
   async getDatabaseData(req, res) {
     try {
       const live = await queries.getLiveStats();
-      const brainStatus = Brain.getStatus();
+      const activeBrain = getBrain();
+      const brainStatus = activeBrain.getStatus();
 
       // Pegamos o valor mais alto entre banco e memória para garantir sincronia
-      const liveBrain = global.liveBrainInstance || Brain;
-      const snapshotsCount = Math.max(parseInt(live.ai_examples || 0), liveBrain.getStatus().examples || liveBrain.getStatus().current_examples_count || 0);
+      const snapshotsCount = Math.max(parseInt(live.ai_examples || 0), brainStatus.examples || brainStatus.current_examples_count || 0);
       const decisionsCount = parseInt(live.total_ai_decisions || 0);
 
       sendResponse(res, true, {
@@ -218,8 +222,9 @@ class AIController {
       await queries.hardResetDatabase();
 
       // Reinicializa o estado do Brain em memória se necessário
-      Brain.config.current_examples_count = 0;
-      Brain.mode = 'observation';
+      const activeBrain = getBrain();
+      activeBrain.config.current_examples_count = 0;
+      activeBrain.mode = 'observation';
 
       sendResponse(res, true, {
         message: "Database reset successfully",
@@ -281,6 +286,7 @@ class AIController {
 
   async receiveSnapshot(req, res) {
     try {
+      const activeBrain = getBrain();
       const snapshot = req.body;
       if (!snapshot) return res.status(400).json({ error: 'No data' });
 
@@ -289,7 +295,7 @@ class AIController {
 
       // Processa em background
       setImmediate(() => {
-        Brain.processMarketSnapshot(snapshot).catch(err =>
+        activeBrain.processMarketSnapshot(snapshot).catch(err =>
           logger.error('Error processing snapshot in background:', err)
         );
       });
@@ -300,8 +306,9 @@ class AIController {
 
   async getRecommendations(req, res) {
     try {
+      const activeBrain = getBrain();
       // Pega as recomendações vivas da memória do Brain, não do histórico do banco
-      const recommendations = Brain.getRecommendations();
+      const recommendations = activeBrain.getRecommendations();
 
       // O Executor espera um array de recomendações com stayReason
       sendResponse(res, true, recommendations);
