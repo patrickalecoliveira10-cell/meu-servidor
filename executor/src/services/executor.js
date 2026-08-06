@@ -10,6 +10,12 @@ const executorService = {
   emergencyMode: false,
   monitoringInterval: null,
   lastReasons: {}, // Armazena os motivos das decisões por moeda
+  brainInstance: null,
+
+  setBrain(brain) {
+    this.brainInstance = brain;
+    logger.info('[EXECUTOR] Brain instance linked for direct communication');
+  },
 
   async initialize() {
     try {
@@ -48,8 +54,10 @@ const executorService = {
     // Execução imediata
     this.monitorAndExecute();
 
-    // Intervalo de polling aumentado para economizar recursos (30 segundos)
-    const interval = (config.aiBrain && config.aiBrain.pollInterval) || 30000;
+    // Intervalo de polling reduzido para 10s no modo unificado para análise em tempo real
+    const isUnified = process.env.UNIFIED_MODE === 'true';
+    const interval = isUnified ? 10000 : ((config.aiBrain && config.aiBrain.pollInterval) || 30000);
+
     this.monitoringInterval = setInterval(() => {
       if (!this.isPaused && !this.emergencyMode) {
         this.monitorAndExecute();
@@ -67,29 +75,38 @@ const executorService = {
 
   async checkAIRecommendations() {
     try {
-      // Se estiver rodando unificado, usa localhost para não gastar banda de internet
-      const isUnified = process.env.UNIFIED_MODE === 'true';
-      const port = process.env.PORT || 10000;
-      const baseUrl = isUnified ? `http://localhost:${port}` : ((config.aiBrain && config.aiBrain.apiUrl) || 'https://trickappserv2.onrender.com');
+      let signals;
 
-      const response = await axios.get(`${baseUrl}/api/recommendations`, { timeout: 5000 });
+      // MODO UNIFICADO: Acesso direto à memória para tempo real
+      if (this.brainInstance) {
+        signals = this.brainInstance.getRecommendations();
+      } else {
+        // MODO SEPARADO: Fallback para API HTTP
+        const isUnified = process.env.UNIFIED_MODE === 'true';
+        const port = process.env.PORT || 10000;
+        const baseUrl = isUnified ? `http://localhost:${port}` : ((config.aiBrain && config.aiBrain.apiUrl) || 'https://trickappserv2.onrender.com');
 
-      // Ajuste para o formato unificado { success: true, data: [...] }
-      const signals = (response.data && response.data.data) ? response.data.data : response.data;
+        const response = await axios.get(`${baseUrl}/api/recommendations`, { timeout: 5000 });
+        signals = (response.data && response.data.data) ? response.data.data : response.data;
+      }
 
       if (signals && Array.isArray(signals)) {
         for (const signal of signals) {
-          // CAPTURA O MOTIVO SEMPRE (Independente de entrar no trade ou não)
           const sym = (signal.coin_id || signal.symbol || '').toUpperCase();
+
+          // CAPTURA O MOTIVO E LOGA PARA DEBUG
           if (sym && signal.stayReason) {
               this.lastReasons[sym] = signal.stayReason;
+              if (sym === 'XRPUSDT') {
+                  logger.info(`[IA-THINKING] XRPUSDT Analysis: ${signal.stayReason}`);
+              }
           }
 
           await this.processRecommendation(signal);
         }
       }
     } catch (error) {
-      logger.debug('AI Brain heartbeat check failed');
+      if (!this.brainInstance) logger.debug('AI Brain heartbeat check failed');
     }
   },
 
