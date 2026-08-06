@@ -197,6 +197,7 @@ const executorService = {
       // MODO UNIFICADO: Acesso direto à memória para tempo real
       if (this.brainInstance) {
         signals = this.brainInstance.getRecommendations();
+        logger.info(`[EXECUTOR-${cycleId}] Recuperados ${signals?.length || 0} sinais do Brain`);
       } else {
         // MODO SEPARADO: Fallback para API HTTP
         const isUnified = process.env.UNIFIED_MODE === 'true';
@@ -208,6 +209,8 @@ const executorService = {
       }
 
       if (signals && Array.isArray(signals)) {
+        logger.info(`[EXECUTOR-${cycleId}] Processando ${signals.length} sinais totais`);
+
         // 1. ATUALIZAR MOTIVOS
         for (const signal of signals) {
           const sym = (signal.coin_id || signal.symbol || '').toUpperCase();
@@ -221,6 +224,8 @@ const executorService = {
           const entrySignals = signals
             .filter(s => (s.decision === 'enter' || s.decision === 'ENTRY') && (s.confidence >= 0.55))
             .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+
+          logger.info(`[EXECUTOR-${cycleId}] Sinais filtrados: ${entrySignals.length} de ${signals.length} totais (confiança >= 0.55)`);
 
           if (entrySignals.length > 0) {
             logger.info(`[EXECUTOR-${cycleId}] Sniper detectou ${entrySignals.length} oportunidades. Melhor: ${entrySignals[0].coin_id} (${entrySignals[0].confidence})`);
