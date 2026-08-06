@@ -116,14 +116,17 @@ class Brain {
   }
 
   getRecommendations() {
-    // Retenção de 5 minutos para garantir que o App sempre tenha dados
     const now = new Date();
+    logger.info(`[DEBUG BRAIN] getRecommendations chamado em ${now.toISOString()}. activeRecommendations size: ${this.activeRecommendations.size}`);
+    // Retenção de 5 minutos para garantir que o App sempre tenha dados
     for (const [id, rec] of this.activeRecommendations.entries()) {
       if (now - rec.timestamp > 300000) {
         this.activeRecommendations.delete(id);
       }
     }
-    return Array.from(this.activeRecommendations.values());
+    const result = Array.from(this.activeRecommendations.values());
+    logger.info(`[DEBUG BRAIN] getRecommendations retornando ${result.length} sinais`);
+    return result;
   }
 
   getStatus() {
