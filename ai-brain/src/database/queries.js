@@ -118,6 +118,35 @@ const queries = {
     }
   },
 
+  async insertPattern(pattern) {
+    try {
+      const query = `
+        INSERT INTO trading_ai.ai_patterns (
+          pattern_name, coin_id, timeframe, pattern_type,
+          success_rate, occurrence_count, pattern_data, last_seen
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (pattern_name, coin_id) DO UPDATE SET
+          occurrence_count = trading_ai.ai_patterns.occurrence_count + 1,
+          last_seen = NOW();
+      `;
+      await db.query(query, [
+        pattern.pattern_name, pattern.coin_id, pattern.timeframe,
+        pattern.pattern_type, Math.round(pattern.success_rate * 100),
+        1, JSON.stringify(pattern.pattern_data)
+      ]);
+    } catch (e) { /* ignore */ }
+  },
+
+  async insertLearningLog(log) {
+    try {
+      const query = `
+        INSERT INTO trading_ai.ai_learning_logs (log_type, coin_id, message, data, timestamp)
+        VALUES ($1, $2, $3, $4, NOW())
+      `;
+      await db.query(query, [log.log_type, log.coin_id, log.message, JSON.stringify(log.data)]);
+    } catch (e) { /* ignore */ }
+  },
+
   // Simulations
   async insertSimulatedOperation(sim) {
     const query = `
