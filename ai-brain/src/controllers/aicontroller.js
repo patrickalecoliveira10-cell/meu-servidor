@@ -83,19 +83,21 @@ class AIController {
   // Mapeado para AILearningData.kt
   async getAIDataForApp(req, res) {
     try {
-      const stats = await queries.getGlobalLearning() || defaultStats;
       const live = await queries.getLiveStats();
-      const activeBrain = global.liveBrainInstance || Brain;
-      const brainStatus = (activeBrain && typeof activeBrain.getStatus === 'function') ? activeBrain.getStatus() : {};
+      const activeBrain = getBrain();
+      const brainWeights = activeBrain.weights?.global || {};
 
-      // EXTRAÇÃO DIRETA E SEGURA
-      const examples = parseInt(live.ai_examples || 0);
-      const simulatedOps = parseInt(live.total_simulated_ops || 0);
-      const realOps = parseInt(live.total_real_ops || 0);
+      const examples = live.ai_examples;
+      const simulatedOps = live.total_simulated_ops;
+      const realOps = live.total_real_ops;
+      const winRate = live.win_rate;
+      const avgConfidence = live.avg_confidence;
+      const patternsLearned = live.total_decisions;
 
-      const winRateRaw = parseFloat(stats.win_rate || 0.65);
-      const winRate = winRateRaw > 1 ? winRateRaw / 100 : winRateRaw;
-      const currentConfidence = 0.85;
+      // Indicadores reais com pesos aprendidos
+      const importantIndicators = Object.entries(brainWeights)
+        .map(([name, weight]) => ({ name, importance: parseFloat(weight.toFixed(2)), usage: 100 }))
+        .sort((a, b) => b.importance - a.importance);
 
       sendResponse(res, true, {
         metrics: {
@@ -103,16 +105,13 @@ class AIController {
           simulatedOperations: simulatedOps,
           realOperations: realOps,
           historicalAccuracy: winRate,
-          dailyAccuracy: 0.75,
+          dailyAccuracy: winRate,
           winRate: winRate,
-          patternsLearned: Math.floor(examples / 10),
-          currentConfidence: currentConfidence,
-          state: (examples > 1000) ? "OPERATING" : "OBSERVING"
+          patternsLearned: patternsLearned,
+          currentConfidence: avgConfidence,
+          state: examples > 1000 ? "OPERATING" : "OBSERVING"
         },
-        importantIndicators: [
-          { name: "RSI", importance: 0.90, usage: 100 },
-          { name: "EMA", importance: 0.85, usage: 100 }
-        ]
+        importantIndicators
       });
     } catch (error) {
       logger.error('Error in getAIDataForApp:', error);
@@ -165,44 +164,68 @@ class AIController {
   async getStatisticsData(req, res) {
     try {
       const live = await queries.getLiveStats();
-      const stats = await queries.getGlobalLearning() || defaultStats;
 
-      // Usamos o Win Rate calculado das simulações se o histórico global estiver zerado
-      const winRate = live.calculatedWinRate > 0 ? live.calculatedWinRate : (parseFloat(stats.win_rate || 0) / 100);
-
-      const totalDecisions = live.total_simulated_ops || parseInt(stats.total_decisions || 0);
-      const correctDecisions = live.wins || parseInt(stats.correct_decisions || 0);
+      const winRate = live.win_rate;
       const lossRate = Math.max(0, 1.0 - winRate);
+      const wins = live.wins;
+      const losses = live.losses;
+      const closed = wins + losses;
 
-      // Cálculo de Lucro Simulado Real (Estimativa baseada em wins/losses)
-      const estimatedProfit = (correctDecisions * 2.0) - (totalDecisions - correctDecisions);
+      // Lucro simulado: cada win = +4% (TP), cada loss = -2% (SL)
+      const totalProfit = (wins * 4.0) - (losses * 2.0);
+
+      // Melhor/pior moeda por win rate real no banco
+      let bestCoin = 'N/A', worstCoin = 'N/A';
+      try {
+        const coinStats = await db.query(`
+          SELECT c.symbol,
+            COUNT(*) FILTER (WHERE s.result = 'win') as wins,
+            COUNT(*) FILTER (WHERE s.result IS NOT NULL) as total
+          FROM trading_ai.ai_simulated_operations s
+          JOIN trading_ai.coins c ON c.id = s.coin_id
+          WHERE s.result IS NOT NULL
+          GROUP BY c.symbol HAVING COUNT(*) >= 3
+          ORDER BY (COUNT(*) FILTER (WHERE s.result = 'win')::float / COUNT(*)) DESC
+        `);
+        if (coinStats.rows.length > 0) {
+          bestCoin = coinStats.rows[0].symbol;
+          worstCoin = coinStats.rows[coinStats.rows.length - 1].symbol;
+        }
+      } catch(e) {}
+
+      // Indicador mais eficiente pelos pesos aprendidos
+      const activeBrain = getBrain();
+      const weights = activeBrain.weights?.global || {};
+      const sortedWeights = Object.entries(weights).sort((a, b) => b[1] - a[1]);
+      const mostEfficient = sortedWeights[0]?.[0] || 'RSI';
+      const leastEfficient = sortedWeights[sortedWeights.length - 1]?.[0] || 'OBV';
 
       sendResponse(res, true, {
         profit: {
-          dailyProfit: Math.max(0, estimatedProfit * 0.1),
-          weeklyProfit: Math.max(0, estimatedProfit * 0.5),
-          monthlyProfit: Math.max(0, estimatedProfit * 2.0),
-          totalProfit: estimatedProfit
+          dailyProfit: totalProfit * 0.05,
+          weeklyProfit: totalProfit * 0.25,
+          monthlyProfit: totalProfit,
+          totalProfit
         },
         performance: {
-          winRate: winRate,
-          lossRate: lossRate,
-          profitFactor: lossRate > 0 ? (winRate * 2) / lossRate : 2.0,
-          drawdown: 0.0,
-          sharpe: 1.5
+          winRate,
+          lossRate,
+          profitFactor: lossRate > 0 ? (winRate * 4) / (lossRate * 2) : 2.0,
+          drawdown: losses > 0 ? (losses * 2.0) / Math.max(1, closed) : 0,
+          sharpe: closed > 0 ? (totalProfit / closed) / Math.max(0.01, lossRate) : 0
         },
         streaks: {
-          longestWinStreak: Math.min(correctDecisions, 10),
-          longestLossStreak: 1
+          longestWinStreak: wins,
+          longestLossStreak: losses
         },
         bestWorst: {
-          bestCoin: "BTCUSDT",
-          worstCoin: "ETHUSDT",
-          bestHour: 14,
-          worstHour: 3,
-          bestSetup: "RSI/EMA Trend",
-          mostEfficientIndicator: "EMA_CROSS",
-          leastEfficientIndicator: "MACD"
+          bestCoin,
+          worstCoin,
+          bestHour: 0,
+          worstHour: 0,
+          bestSetup: 'Multi-Indicator',
+          mostEfficientIndicator: mostEfficient,
+          leastEfficientIndicator: leastEfficient
         }
       });
     } catch (error) {
@@ -211,7 +234,7 @@ class AIController {
         profit: { dailyProfit: 0, weeklyProfit: 0, monthlyProfit: 0, totalProfit: 0 },
         performance: { winRate: 0, lossRate: 0, profitFactor: 0, drawdown: 0, sharpe: 0 },
         streaks: { longestWinStreak: 0, longestLossStreak: 0 },
-        bestWorst: { bestCoin: "N/A", worstCoin: "N/A", bestHour: 0, worstHour: 0, bestSetup: "N/A", mostEfficientIndicator: "N/A", leastEfficientIndicator: "N/A" }
+        bestWorst: { bestCoin: 'N/A', worstCoin: 'N/A', bestHour: 0, worstHour: 0, bestSetup: 'N/A', mostEfficientIndicator: 'N/A', leastEfficientIndicator: 'N/A' }
       });
     }
   }
