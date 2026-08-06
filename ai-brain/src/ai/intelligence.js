@@ -158,26 +158,32 @@ class Intelligence {
 
     if (rsi) {
       const val = parseFloat(rsi.value || rsi);
-      if (val > 70) reasons.push("Sobrecomprado (RSI alto).");
-      else if (val < 30) reasons.push("Sobrevendido (RSI baixo).");
-      else reasons.push(`RSI saudável em ${val.toFixed(0)}.`);
+      if (val > 70) reasons.push(`RSI em ${val.toFixed(0)} (Sobrecomprado).`);
+      else if (val < 30) reasons.push(`RSI em ${val.toFixed(0)} (Sobrevendido).`);
+      else reasons.push(`RSI estável (${val.toFixed(0)}).`);
     }
 
     if (adx) {
       const val = parseFloat(adx.value || adx);
-      if (val > 25) reasons.push("Tendência direcional forte.");
-      else if (val < 15) reasons.push("Mercado lateral/Sem tendência.");
-      else reasons.push("Consolidação/Baixa volatilidade.");
+      if (val > 25) reasons.push("Tendência direcional forte confirmada.");
+      else if (val < 15) reasons.push("Baixa volatilidade/Mercado lateral.");
+      else reasons.push("Consolidação detectada.");
     }
 
     if (macd) {
       const hist = parseFloat(macd.histogram || macd.hist || 0);
-      if (hist > 0) reasons.push("Momentum comprador (MACD Hist > 0).");
-      else if (hist < 0) reasons.push("Momentum vendedor (MACD Hist < 0).");
+      if (hist > 0) reasons.push("Momentum de alta (MACD Hist > 0).");
+      else if (hist < 0) reasons.push("Momentum de baixa (MACD Hist < 0).");
     }
 
-    if (confidence > 0.70) reasons.push("Configuração técnica de alta probabilidade.");
-    if (reasons.length === 0) reasons.push("Monitorando fluxo de ordens e suportes.");
+    const confPercent = Math.round(confidence * 100);
+    if (confidence >= 0.85) {
+        reasons.unshift(`[ENTRADA SNIPER] Confiança de ${confPercent}%.`);
+    } else if (confidence >= 0.70) {
+        reasons.push(`Aguardando confirmação (${confPercent}%).`);
+    }
+
+    if (reasons.length === 0) reasons.push("Monitorando fluxo de ordens.");
 
     return reasons.join(" ");
   }
@@ -202,9 +208,11 @@ class Intelligence {
         ? ((currentPrice - entryPrice) / entryPrice) * 100
         : ((entryPrice - currentPrice) / entryPrice) * 100;
 
+    let reason = `Lucro: ${profitPct.toFixed(2)}%. RSI: ${rsi.toFixed(0)}. ADX: ${adx.toFixed(0)}.`;
+
     let decision = {
         action: 'hold',
-        reason: "Posição estável, monitorando...",
+        reason: `${reason} Posição estável, monitorando...`,
         params: {}
     };
 
@@ -212,14 +220,16 @@ class Intelligence {
     if (profitPct >= 2.0 && !position.partial_exit_done) {
         decision.action = 'partial_exit';
         decision.params = { percent: 0.5 };
-        decision.reason = "Alvo de 2% atingido. Realizando parcial de 50% para garantir lucro.";
+        decision.reason = `${reason} Alvo de 2% atingido. Realizando parcial de 50%.`;
         return decision;
     }
 
     // 2. TRAILING STOP (Maximizar Lucro)
     if (profitPct >= 1.5) {
         decision.action = 'activate_trailing';
-        decision.params = { trailing_stop: "0.5" }; // Recuo de 0.5%
+        // Calcula o recuo de 0.5% em valor absoluto baseado no preço atual
+        const distance = (currentPrice * 0.005).toFixed(8);
+        decision.params = { trailing_stop: distance };
         decision.reason = "Lucro expressivo detectado. Ativando Trailing Stop para acompanhar a subida.";
         return decision;
     }
