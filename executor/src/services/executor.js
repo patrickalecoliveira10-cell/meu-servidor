@@ -96,6 +96,7 @@ const executorService = {
 
   async monitorAndExecute() {
     const cycleId = Math.random().toString(36).substring(5);
+    logger.info(`[DEBUG EXECUTOR] monitorAndExecute iniciado. cycleId=${cycleId}, isRunning=${this.isRunning}`);
     try {
       // 1. Verificar se há posição aberta na Bybit
       const allPositions = await bybitService.getPosition() || [];
