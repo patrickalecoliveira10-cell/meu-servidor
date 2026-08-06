@@ -180,9 +180,15 @@ const queries = {
     }
   },
 
-  async getOpenSimulatedOperations() {
+  async getOpenSimulatedOperations(coinId = null) {
     try {
-      const result = await db.query("SELECT * FROM trading_ai.ai_simulated_operations WHERE result IS NULL");
+      let query = "SELECT * FROM trading_ai.ai_simulated_operations WHERE result IS NULL";
+      let params = [];
+      if (coinId) {
+        query += " AND coin_id = $1";
+        params = [coinId];
+      }
+      const result = await db.query(query, params);
       return result.rows.map(row => ({
         ...row,
         entry_price: parseFloat(row.entry_price) / 10000000000,
