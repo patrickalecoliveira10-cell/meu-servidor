@@ -166,6 +166,7 @@ class Intelligence {
     if (adx) {
       const val = parseFloat(adx.value || adx);
       if (val > 25) reasons.push("Tendência direcional forte.");
+      else if (val < 15) reasons.push("Mercado lateral/Sem tendência.");
       else reasons.push("Consolidação/Baixa volatilidade.");
     }
 
@@ -182,7 +183,7 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis, config) {
-    // Só entra com 85% de confiança ou mais para garantir qualidade máxima
+    // Só entra com 85% de confiança ou mais para garantir qualidade máxima (Modo Sniper)
     const entryThreshold = 0.85;
 
     if (confidence >= entryThreshold) return 'enter';
