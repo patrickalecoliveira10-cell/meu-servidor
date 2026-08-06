@@ -100,9 +100,10 @@ const executorService = {
       const symbol = (decision.coin_id || decision.symbol || '').toUpperCase();
       const side = (decision.side || 'Buy').toLowerCase() === 'buy' ? 'Buy' : 'Sell';
 
-      // Salva o motivo (raciocínio humano) para o Android ler
+      // SALVA O MOTIVO (RACIOCÍNIO) ANTES DE QUALQUER TRAVA
       if (symbol && decision.stayReason) {
           this.lastReasons[symbol] = decision.stayReason;
+          // logger.debug(`[AI ANALYSIS] ${symbol}: ${decision.stayReason}`);
       }
 
       if (!symbol) {
