@@ -63,10 +63,10 @@ class Brain {
   }
 
   getRecommendations() {
-    // Remove recomendações velhas (mais de 1 minuto)
+    // Aumentado para 5 minutos para garantir sincronia com o App
     const now = new Date();
     for (const [id, rec] of this.activeRecommendations.entries()) {
-      if (now - rec.timestamp > 60000) {
+      if (now - rec.timestamp > 300000) {
         this.activeRecommendations.delete(id);
       }
     }
