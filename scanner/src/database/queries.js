@@ -5,8 +5,8 @@ const queries = {
   async insertMarketSnapshot(snapshot) {
     const query = `
       INSERT INTO trading_ai.scanner_snapshots (
-        coin_id, timeframe, open, high, low, close, volume, indicators, timestamp, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9/1000.0), NOW())
+        coin_id, timeframe, open, high, low, close, volume, indicators, timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9/1000.0))
       ON CONFLICT (coin_id, timeframe, timestamp) DO UPDATE SET
         close = EXCLUDED.close,
         volume = EXCLUDED.volume,
@@ -45,8 +45,8 @@ const queries = {
 
     const query = `
       INSERT INTO ${fullTableName} (
-        coin_id, timeframe, period, value, timestamp, created_at
-      ) VALUES ($1, $2, $3, $4, to_timestamp($5/1000.0), NOW())
+        coin_id, timeframe, period, value, timestamp
+      ) VALUES ($1, $2, $3, $4, to_timestamp($5/1000.0))
       ON CONFLICT (coin_id, timeframe, period, timestamp)
       DO UPDATE SET value = EXCLUDED.value
       RETURNING id;
@@ -76,8 +76,8 @@ const queries = {
 
     const query = `
       INSERT INTO trading_ai.scanner_results (
-        session_id, coin_id, timeframe, score, price, volume, volatility, indicators_matched, timestamp, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9/1000.0), NOW())
+        session_id, coin_id, timeframe, score, price, volume, volatility, indicators_matched, timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9/1000.0))
       RETURNING id;
     `;
     const values = [
