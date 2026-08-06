@@ -1,17 +1,18 @@
 const bybitService = require('../services/bybit');
+const privateBybitService = require('../../../executor/src/services/bybit'); // Importa o serviço com suporte a posições
 const indicatorsCalculator = require('../indicators');
 const scoreCalculator = require('./scoreCalculator');
 const queries = require('../database/queries');
 const logger = require('../logs/logger');
 const config = require('../config');
-const axios = require('axios'); // Adicionado para comunicar com a IA
+const axios = require('axios');
 
 class MarketScanner {
   constructor() {
     this.isRunning = false;
     this.currentSessionId = null;
     this.scanInterval = null;
-    this.brainInstance = null; // Link direto
+    this.brainInstance = null;
     this.stats = {
       coinsScanned: 0,
       snapshotsCreated: 0,
@@ -36,7 +37,6 @@ class MarketScanner {
     this.isRunning = true;
     this.stats.startTime = Date.now();
 
-    // Create scanner session
     try {
       this.currentSessionId = await queries.createScannerSession({
         coins_count: config.scanner.coinsCount,
@@ -49,7 +49,6 @@ class MarketScanner {
       return;
     }
 
-    // Start scanning loop
     await this.scanCycle();
     this.scanInterval = setInterval(() => {
       this.scanCycle().catch(error => {
@@ -61,37 +60,9 @@ class MarketScanner {
   }
 
   async stop() {
-    if (!this.isRunning) {
-      logger.warn('Scanner is not running');
-      return;
-    }
-
-    logger.info('Stopping Market Scanner...');
+    if (!this.isRunning) return;
     this.isRunning = false;
-
-    if (this.scanInterval) {
-      clearInterval(this.scanInterval);
-      this.scanInterval = null;
-    }
-
-    // Update session
-    if (this.currentSessionId) {
-      try {
-        const duration = Math.floor((Date.now() - this.stats.startTime) / 1000);
-        await queries.updateScannerSession(this.currentSessionId, {
-          status: 'stopped',
-          end_time: new Date(),
-          coins_scanned: this.stats.coinsScanned,
-          snapshots_created: this.stats.snapshotsCreated,
-          errors_count: this.stats.errorsCount,
-          duration_seconds: duration
-        });
-        logger.info('Scanner session updated');
-      } catch (error) {
-        logger.error('Failed to update scanner session:', error);
-      }
-    }
-
+    if (this.scanInterval) clearInterval(this.scanInterval);
     logger.info('Market Scanner stopped');
   }
 
@@ -102,33 +73,35 @@ class MarketScanner {
     logger.info('Starting scan cycle...');
 
     try {
-      // 1. Buscar moedas com posições abertas
-      const allPositions = await bybitService.getPosition() || [];
-      const activeSymbols = allPositions
-        .filter(p => parseFloat(p.size || 0) > 0)
-        .map(p => p.symbol);
+      // 1. Buscar moedas com posições abertas usando o serviço do EXECUTOR
+      let activeSymbols = [];
+      try {
+          const allPositions = await privateBybitService.getPosition() || [];
+          activeSymbols = allPositions
+            .filter(p => parseFloat(p.size || 0) > 0)
+            .map(p => p.symbol);
+      } catch (e) {
+          logger.warn('[SCANNER] Could not fetch positions from private service, using top coins only');
+      }
 
-      // 2. Buscar as top coins (que já vêm com priceChange24h, etc)
+      // 2. Buscar as top coins
       let allCoins = await bybitService.getTopCoins(config.scanner.coinsCount);
 
       // 3. Priorização Inteligente
       const prioritizedCoins = [];
       const seen = new Set();
 
-      // Primeiro, colocamos as moedas que você está operando (buscando os dados completos delas na lista da Bybit)
       for (const symbol of activeSymbols) {
         const fullData = allCoins.find(c => c.symbol === symbol);
         if (fullData) {
           prioritizedCoins.push(fullData);
           seen.add(symbol);
         } else {
-          // Se não estiver no top 100, adiciona apenas o símbolo (o processCoin lidará com o resto)
           prioritizedCoins.push({ symbol, priceChange24h: 0 });
           seen.add(symbol);
         }
       }
 
-      // Depois, adicionamos o resto da lista
       for (const coin of allCoins) {
         if (!seen.has(coin.symbol)) {
           prioritizedCoins.push(coin);
@@ -136,33 +109,18 @@ class MarketScanner {
         }
       }
 
-      logger.info(`[SCANNER] Iniciando ciclo para ${prioritizedCoins.length} moedas. Prioridade: ${activeSymbols.join(', ') || 'Nenhuma'}`);
+      logger.info(`[SCANNER] Cycle: ${prioritizedCoins.length} coins. Active: ${activeSymbols.join(', ') || 'none'}`);
 
-      // Processa cada moeda
       for (const coin of prioritizedCoins) {
-        // Register/Update coin in database to ensure FK consistency
-        try {
-          await queries.upsertCoin(coin);
-        } catch (error) {
-          logger.error(`Error upserting coin ${coin.symbol}:`, error.message);
-        }
-
+        try { await queries.upsertCoin(coin); } catch (e) {}
         for (const timeframe of config.scanner.timeframes) {
           await this.processCoin(coin, timeframe);
         }
-        
         this.stats.coinsScanned++;
       }
 
       this.stats.lastUpdateTime = Date.now();
-      const cycleDuration = Date.now() - cycleStartTime;
-      
-      logger.info('Scan cycle completed', {
-        coinsScanned: this.stats.coinsScanned,
-        snapshotsCreated: this.stats.snapshotsCreated,
-        errorsCount: this.stats.errorsCount,
-        duration: cycleDuration
-      });
+      logger.info('Scan cycle completed');
 
     } catch (error) {
       this.stats.errorsCount++;
@@ -172,35 +130,17 @@ class MarketScanner {
 
   async processCoin(coin, timeframe) {
     try {
-      // Fetch klines
       const klines = await bybitService.getKlines(coin.symbol, timeframe, 200);
-      
-      if (klines.length < 50) {
-        logger.warn(`Insufficient data for ${coin.symbol} ${timeframe}`);
-        return;
-      }
+      if (klines.length < 50) return;
 
       const latestKline = klines[klines.length - 1];
-      
-      // Calculate indicators
       const indicators = indicatorsCalculator.calculateAll(klines);
       
-      // Calculate score
       const scoreResult = scoreCalculator.calculateScore(
-        {
-          close: latestKline.close,
-          volume: latestKline.volume,
-          priceChange24h: coin.priceChange24h
-        },
+        { close: latestKline.close, volume: latestKline.volume, priceChange24h: coin.priceChange24h },
         indicators
       );
 
-      // Calculate volatility (using ATR)
-      const volatility = indicators.atr 
-        ? (indicators.atr / latestKline.close) * 100 
-        : 0;
-
-      // Create market snapshot
       const snapshot = {
         coin_id: coin.symbol,
         timeframe: timeframe,
@@ -210,24 +150,14 @@ class MarketScanner {
         close: latestKline.close,
         volume: latestKline.volume,
         indicators: indicators,
-        timestamp: typeof latestKline.timestamp === 'string' 
-          ? new Date(latestKline.timestamp).getTime() 
-          : latestKline.timestamp
+        timestamp: Date.now()
       };
 
-      // Save to database
       await queries.insertMarketSnapshot(snapshot);
       this.stats.snapshotsCreated++;
 
-      // Convert timestamp to Unix timestamp if it's a string
-      const unixTimestamp = typeof latestKline.timestamp === 'string' 
-        ? new Date(latestKline.timestamp).getTime() 
-        : latestKline.timestamp;
-
-      // Save indicators
-      await this.saveIndicators(coin.symbol, timeframe, indicators, unixTimestamp);
-
-      // Save scanner result
+      // Salva Indicadores e Resultados para o App Android
+      await this.saveIndicators(coin.symbol, timeframe, indicators, snapshot.timestamp);
       await queries.insertScannerResult({
         session_id: this.currentSessionId,
         coin_id: coin.symbol,
@@ -235,116 +165,47 @@ class MarketScanner {
         score: scoreResult.score,
         price: latestKline.close,
         volume: latestKline.volume,
-        volatility: volatility,
-        indicators_summary: {
-          score: scoreResult,
-          indicators: indicators
-        },
-        timestamp: unixTimestamp
+        volatility: indicators.atr ? (indicators.atr / latestKline.close) * 100 : 0,
+        indicators_summary: { score: scoreResult, indicators: indicators },
+        timestamp: snapshot.timestamp
       });
 
-      // NOTIFICAR IA (MODO UNIFICADO) para processamento imediato
-      try {
-        if (this.brainInstance) {
-          // MODO UNIFICADO: Processamento direto em memória (Instantanêo)
-          this.brainInstance.processMarketSnapshot(snapshot).catch(err =>
-            logger.error(`[Scanner -> Brain] Erro no processamento direto: ${err.message}`)
-          );
-        } else {
-          // MODO SEPARADO: Fallback para HTTP
-          const isUnified = process.env.UNIFIED_MODE === 'true';
-          const port = process.env.PORT || 10000;
-          const aiUrl = isUnified ? `http://localhost:${port}` : (process.env.AI_BRAIN_URL || 'https://trickappserv2.onrender.com');
-
-          axios.post(`${aiUrl}/api/snapshot`, snapshot).catch((err) => {
-            logger.error(`[Scanner -> IA] Erro na comunicação HTTP: ${err.message}`);
-          });
-        }
-      } catch (aiErr) {
-        logger.error(`Error in notifying AI: ${aiErr.message}`);
+      // Notificar IA diretamente (Modo Unificado)
+      if (this.brainInstance) {
+        this.brainInstance.processMarketSnapshot(snapshot).catch(err =>
+          logger.error(`[Scanner -> Brain] Error: ${err.message}`)
+        );
       }
-
-      logger.debug(`Processed ${coin.symbol} ${timeframe}`, {
-        score: scoreResult.score,
-        category: scoreResult.category
-      });
 
     } catch (error) {
       this.stats.errorsCount++;
-      logger.error(`Error processing ${coin.symbol} ${timeframe}:`, error);
+      logger.error(`Error processing ${coin.symbol}:`, error.message);
     }
   }
 
   async saveIndicators(coinId, timeframe, indicators, timestamp) {
-    const indicatorPromises = [];
-
-    // Save EMA indicators
+    const promises = [];
     if (indicators.ema) {
       Object.keys(indicators.ema).forEach(key => {
-        const period = parseInt(key.replace('ema_', ''));
-        if (indicators.ema[key] != null && !isNaN(indicators.ema[key])) {
-          indicatorPromises.push(
-            queries.insertIndicator({
-              type: 'ema',
-              coin_id: coinId,
-              timeframe: timeframe,
-              period: period,
-              value: indicators.ema[key],
-              signal: null,
-              timestamp: timestamp
-            })
-          );
-        }
+        promises.push(queries.insertIndicator({
+          type: 'ema', coin_id: coinId, timeframe: timeframe,
+          period: parseInt(key.replace('ema_', '')), value: indicators.ema[key], timestamp
+        }));
       });
     }
-
-    // Save RSI
-    if (indicators.rsi && indicators.rsi.value != null && !isNaN(indicators.rsi.value)) {
-      indicatorPromises.push(
-        queries.insertIndicator({
-          type: 'rsi',
-          coin_id: coinId,
-          timeframe: timeframe,
-          period: config.indicators.rsiPeriod,
-          value: indicators.rsi.value,
-          signal: indicators.rsi.signal,
-          timestamp: timestamp
-        })
-      );
+    if (indicators.rsi) {
+      promises.push(queries.insertIndicator({
+        type: 'rsi', coin_id: coinId, timeframe: timeframe,
+        period: 14, value: indicators.rsi.value, signal: indicators.rsi.signal, timestamp
+      }));
     }
-
-    // Save MACD
-    if (indicators.macd && indicators.macd.macd != null && !isNaN(indicators.macd.macd)) {
-      indicatorPromises.push(
-        queries.insertIndicator({
-          type: 'macd',
-          coin_id: coinId,
-          timeframe: timeframe,
-          period: config.indicators.macdFast,
-          value: indicators.macd.macd,
-          signal: indicators.macd.signal,
-          timestamp: timestamp
-        })
-      );
-    }
-
-    // Save other indicators similarly...
-    await Promise.all(indicatorPromises);
+    await Promise.all(promises).catch(e => logger.error('Error saving indicators:', e.message));
   }
 
   getStatus() {
     return {
       isRunning: this.isRunning,
-      sessionId: this.currentSessionId,
-      stats: {
-        ...this.stats,
-        uptime: this.stats.startTime ? Math.floor((Date.now() - this.stats.startTime) / 1000) : 0
-      },
-      config: {
-        coinsCount: config.scanner.coinsCount,
-        updateInterval: config.scanner.updateInterval,
-        timeframes: config.scanner.timeframes
-      }
+      stats: { ...this.stats, uptime: this.stats.startTime ? Math.floor((Date.now() - this.stats.startTime) / 1000) : 0 }
     };
   }
 }
