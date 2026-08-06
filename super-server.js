@@ -13,17 +13,29 @@ const db = require('./ai-brain/src/database/connection');
 
 // Função de carregamento seguro para evitar MODULE_NOT_FOUND no Render
 function safeRequire(modulePath) {
-    const fullPath = path.resolve(__dirname, modulePath);
-    if (!fs.existsSync(fullPath) && !fs.existsSync(fullPath + '.js')) {
-        console.error(`[CRITICAL] Module not found at: ${fullPath}`);
-        // Tenta listar o diretório para debug
-        const dir = path.dirname(fullPath);
-        if (fs.existsSync(dir)) {
-            console.log(`Directory listing for ${dir}:`, fs.readdirSync(dir));
-        }
-        throw new Error(`Cannot find module: ${fullPath}`);
+    let fullPath = path.resolve(__dirname, modulePath);
+
+    // Tenta o caminho original
+    if (fs.existsSync(fullPath) || fs.existsSync(fullPath + '.js')) {
+        return require(fullPath);
     }
-    return require(fullPath);
+
+    // Se falhar e for o brain, tenta brains
+    if (modulePath.includes('brain.js')) {
+        const altPath = fullPath.replace('brain.js', 'brains.js');
+        if (fs.existsSync(altPath)) {
+            console.log(`[INFO] Falling back from brain.js to brains.js at: ${altPath}`);
+            return require(altPath);
+        }
+    }
+
+    // Tenta ver se está um nível acima (caso de subpastas)
+    console.error(`[CRITICAL] Module not found at: ${fullPath}`);
+    const dir = path.dirname(fullPath);
+    if (fs.existsSync(dir)) {
+        console.log(`Directory listing for ${dir}:`, fs.readdirSync(dir));
+    }
+    throw new Error(`Cannot find module: ${fullPath}`);
 }
 
 console.log('--- INICIALIZANDO NÚCLEOS UNIFICADOS ---');
