@@ -293,9 +293,10 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis) {
-    // Exige: confiança >= 68% + side=buy + pelo menos 1 confirmação (MACD/ADX/EMA/Supertrend/Ichimoku/BB)
-    if (confidence >= 0.68 && analysis.side === 'buy' && analysis.hasConfirmation) return 'enter';
-    if (confidence >= 0.55) return 'wait';
+    // Exige: confiança >= 55% + side=buy + pelo menos 1 confirmação (MACD/ADX/EMA/Supertrend/Ichimoku/BB)
+    // Reduzido de 68% para 55% para permitir mais operações em mercado lateral
+    if (confidence >= 0.55 && analysis.side === 'buy' && analysis.hasConfirmation) return 'enter';
+    if (confidence >= 0.45) return 'wait';
     return 'not_enter';
   }
 
