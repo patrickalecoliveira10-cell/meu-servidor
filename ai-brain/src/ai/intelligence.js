@@ -65,17 +65,31 @@ class Intelligence {
       const ind = indicators[name.toLowerCase()] || indicators[name.toUpperCase()];
       if (ind) {
         let signal = 0;
-        if (ind.signal !== undefined) {
-          signal = parseFloat(ind.signal);
+
+        // Se for um objeto retornado pelo IndicatorsCalculator
+        if (typeof ind === 'object') {
+          if (name.toLowerCase() === 'rsi') {
+            const val = parseFloat(ind.value);
+            if (val < 30) signal = 0.8;
+            else if (val > 70) signal = -0.8;
+          } else if (name.toLowerCase() === 'macd') {
+            signal = parseFloat(ind.histogram || 0) > 0 ? 0.6 : -0.6;
+          } else if (name.toLowerCase() === 'adx') {
+            signal = (parseFloat(ind.value || 0) > 25) ? 0.4 : 0;
+          } else if (ind.signal !== undefined) {
+             // Fallback para sinais numéricos se existirem
+             const s = parseFloat(ind.signal);
+             if (!isNaN(s)) signal = s;
+          }
         } else {
-          const val = parseFloat(ind.value || ind);
+          // Fallback para valor numérico direto
+          const val = parseFloat(ind);
           if (name.toLowerCase() === 'rsi') {
             if (val < 35) signal = 0.8;
             else if (val > 65) signal = -0.8;
-          } else if (name.toLowerCase() === 'macd') {
-            signal = parseFloat(ind.hist || 0) > 0 ? 0.5 : -0.5;
           }
         }
+
         score += signal * parseFloat(weight);
         totalWeight += parseFloat(weight);
       }
@@ -91,18 +105,34 @@ class Intelligence {
     let quality = 0.5;
     const rsi = indicators.rsi || indicators.RSI;
     const macd = indicators.macd || indicators.MACD;
-    if (rsi && macd) quality += 0.2;
+    const ema = indicators.ema || indicators.EMA;
+
+    if (rsi && rsi.value) {
+      const rv = rsi.value;
+      if (rv < 40 || rv > 60) quality += 0.1;
+    }
+
+    if (macd && Math.abs(macd.histogram) > 0) quality += 0.1;
+
+    // Cruzamento de EMA se disponível
+    if (ema && ema.ema_9 && ema.ema_21) {
+       if (ema.ema_9 > ema.ema_21) quality += 0.1;
+    }
+
     return Math.min(1, quality);
   }
 
   evaluateTrend(indicators) {
     const adx = indicators.adx || indicators.ADX;
-    if (adx) return Math.min(1, parseFloat(adx.value || adx) / 100);
+    if (adx) {
+      const val = parseFloat(adx.value || 0);
+      return Math.min(1, val / 50); // ADX 50 é tendência muito forte
+    }
     return 0.5;
   }
 
   calculateConfidence(analysis, setupQuality, trendStrength) {
-    return (analysis.winProbability * 0.6) + (setupQuality * 0.2) + (trendStrength * 0.2);
+    return (analysis.winProbability * 0.5) + (setupQuality * 0.25) + (trendStrength * 0.25);
   }
 
   generateStayReason(indicators, confidence, analysis) {
@@ -115,25 +145,26 @@ class Intelligence {
     if (rsi) {
       const val = parseFloat(rsi.value || rsi);
       if (val > 70) reasons.push("Sobrecomprado (RSI alto).");
-      else if (val < 30) reasons.push("Sobreprendido (RSI baixo).");
-      else reasons.push(`RSI em ${val.toFixed(0)}.`);
+      else if (val < 30) reasons.push("Sobrevendido (RSI baixo).");
+      else reasons.push(`RSI saudável em ${val.toFixed(0)}.`);
     }
 
     if (adx) {
       const val = parseFloat(adx.value || adx);
-      if (val > 25) reasons.push("Tendência forte.");
-      else reasons.push("Mercado lateral.");
+      if (val > 25) reasons.push("Tendência direcional forte.");
+      else reasons.push("Consolidação/Baixa volatilidade.");
     }
 
-    if (macd && macd.hist) {
-      const hist = parseFloat(macd.hist);
-      if (hist > 0) reasons.push("Momentum de alta.");
-      else reasons.push("Pressão vendedora.");
+    if (macd) {
+      const hist = parseFloat(macd.histogram || macd.hist || 0);
+      if (hist > 0) reasons.push("Momentum comprador (MACD Hist > 0).");
+      else if (hist < 0) reasons.push("Momentum vendedor (MACD Hist < 0).");
     }
 
-    if (confidence > 0.70) reasons.push("Sinal de alta confiança.");
+    if (confidence > 0.70) reasons.push("Configuração técnica de alta probabilidade.");
+    if (reasons.length === 0) reasons.push("Monitorando fluxo de ordens e suportes.");
 
-    return reasons.length > 0 ? reasons.join(" ") : "Monitorando volatilidade e padrões de preço.";
+    return reasons.join(" ");
   }
 
   determineDecision(confidence, analysis, config) {
