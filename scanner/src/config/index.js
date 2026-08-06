@@ -21,20 +21,20 @@ const config = {
 
   // Indicators
   indicators: {
-    ema: process.env.INDICATORS_EMA === 'true',
-    vwap: process.env.INDICATORS_VWAP === 'true',
-    rsi: process.env.INDICATORS_RSI === 'true',
-    macd: process.env.INDICATORS_MACD === 'true',
-    adx: process.env.INDICATORS_ADX === 'true',
-    atr: process.env.INDICATORS_ATR === 'true',
-    bollinger: process.env.INDICATORS_BOLLINGER === 'true',
-    psar: process.env.INDICATORS_PSAR === 'true',
-    stochastic: process.env.INDICATORS_STOCHASTIC === 'true',
-    kama: process.env.INDICATORS_KAMA === 'true',
+    ema: process.env.INDICATORS_EMA !== 'false',
+    vwap: process.env.INDICATORS_VWAP !== 'false',
+    rsi: process.env.INDICATORS_RSI !== 'false',
+    macd: process.env.INDICATORS_MACD !== 'false',
+    adx: process.env.INDICATORS_ADX !== 'false',
+    atr: process.env.INDICATORS_ATR !== 'false',
+    bollinger: process.env.INDICATORS_BOLLINGER !== 'false',
+    psar: process.env.INDICATORS_PSAR !== 'false',
+    stochastic: process.env.INDICATORS_STOCHASTIC !== 'false',
+    kama: process.env.INDICATORS_KAMA !== 'false',
     heiken: process.env.INDICATORS_HEIKEN === 'true',
     ichimoku: process.env.INDICATORS_ICHIMOKU === 'true',
-    obv: process.env.INDICATORS_OBV === 'true',
-    supertrend: process.env.INDICATORS_SUPERTREND === 'true',
+    obv: process.env.INDICATORS_OBV !== 'false',
+    supertrend: process.env.INDICATORS_SUPERTREND !== 'false',
     
     // EMA Periods
     emaPeriods: (process.env.EMA_PERIODS || '9,21,50,200').split(',').map(Number),
