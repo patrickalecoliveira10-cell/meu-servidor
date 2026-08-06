@@ -75,11 +75,8 @@ class Brain {
       await this.simulation.run(snapshot, decision);
 
       // Incrementar contador local para atualização imediata no App
-      if (this.intelligence.stats) {
-        this.intelligence.stats.total_snapshots++;
-        if (decision.decision === 'enter') {
-          this.intelligence.stats.total_simulated_ops++;
-        }
+      if (this.intelligence.stats && decision.decision === 'enter') {
+        this.intelligence.stats.total_simulated_ops++;
       }
       this.activeRecommendations.set(coin_id, {
         coin_id,
