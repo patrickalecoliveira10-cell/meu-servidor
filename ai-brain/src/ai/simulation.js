@@ -22,15 +22,14 @@ class Simulation {
       if (decision.decision !== 'enter') return;
 
       // Prevent duplicate open orders for the same coin and timeframe
-      const openSims = await queries.getOpenSimulatedOperations();
-      const alreadyOpen = openSims.find(s => s.coin_id === snapshot.coin_id && s.timeframe === snapshot.timeframe);
+      const openSims = await queries.getOpenSimulatedOperations(snapshot.coin_id);
+      const alreadyOpen = openSims.find(s => s.timeframe === snapshot.timeframe);
       if (alreadyOpen) return;
 
-      logger.info(`Running simulation for ${snapshot.coin_id}...`);
-
-      // Usar 'close' ou 'price' garantindo que seja um float
       const price = parseFloat(snapshot.close || snapshot.price || snapshot.indicators?.price || 0);
       if (price === 0) return;
+
+      logger.info(`[SIM] Opening position for ${snapshot.coin_id} (${snapshot.timeframe}) at ${price}`);
 
       const isSell = decision.side === 'sell';
 
@@ -40,9 +39,9 @@ class Simulation {
         timeframe: snapshot.timeframe,
         side: decision.side || 'buy',
         entry_price: price,
-        // Alvos mais realistas: SL de 1.5% e TP de 3% (Sniper)
-        stop_loss: isSell ? price * 1.015 : price * 0.985,
-        take_profit: isSell ? price * 0.97 : price * 1.03,
+        // Alvos Sniper: SL de 2% e TP de 4% para evitar ruído excessivo de moedas voláteis
+        stop_loss: isSell ? price * 1.02 : price * 0.98,
+        take_profit: isSell ? price * 0.96 : price * 1.04,
         confidence_at_entry: decision.confidence,
         decision_data: decision,
         timestamp: new Date()
@@ -57,10 +56,11 @@ class Simulation {
 
   async updateResults(snapshot) {
     try {
-      const openSims = await queries.getOpenSimulatedOperations();
-      const rawPrice = snapshot.price || snapshot.close || snapshot.indicators?.price;
+      const openSims = await queries.getOpenSimulatedOperations(snapshot.coin_id);
+      if (openSims.length === 0) return;
 
-      if (!rawPrice || openSims.length === 0) return;
+      const rawPrice = snapshot.price || snapshot.close || snapshot.indicators?.price;
+      if (!rawPrice) return;
 
       const currentPrice = parseFloat(rawPrice);
 
@@ -119,7 +119,7 @@ class Simulation {
             duration_seconds: duration
           });
 
-          logger.info(`Simulation closed for ${sim.coin_id}: ${result.toUpperCase()} (${profitLoss.toFixed(2)}%)`);
+          logger.info(`[SIM] Simulation closed for ${sim.coin_id}: ${result.toUpperCase()} (${profitLoss.toFixed(2)}%)`);
 
           // Feedback to Learning module to adjust weights
           if (this.learning) {
