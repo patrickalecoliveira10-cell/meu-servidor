@@ -87,11 +87,20 @@ class AIController {
     try {
       const stats = await queries.getGlobalLearning() || defaultStats;
       const live = await queries.getLiveStats();
-      const brainStatus = Brain.getStatus();
 
-      // Fonte de verdade: Status em memória do Brain (sincronizado com o log)
-      const examples = brainStatus.examples || 0;
-      const simulatedOps = parseInt(live.total_simulated_ops || 0);
+      // PRIORIDADE: Instância viva do Super Servidor (global.liveBrainInstance)
+      // Se não houver global, usa o Brain carregado pelo require
+      const activeBrain = global.liveBrainInstance || Brain;
+      const brainStatus = activeBrain.getStatus();
+
+      // Fonte de verdade: Status em memória do Brain
+      // Pegamos de vários possíveis campos de nomes diferentes dependendo da versão (brain vs brains)
+      const examples = brainStatus.examples ||
+                       brainStatus.current_examples_count ||
+                       brainStatus.examplesAnalyzed || 0;
+
+      const simulatedOps = brainStatus.closedTrades ||
+                           parseInt(live.total_simulated_ops || 0);
 
       // Normalização: 0.0 a 1.0
       const winRateRaw = parseFloat(stats.win_rate || 0);
