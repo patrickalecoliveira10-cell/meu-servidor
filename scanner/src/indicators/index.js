@@ -325,53 +325,18 @@ class IndicatorsCalculator {
       timestamp: data[data.length - 1].timestamp || Date.now(),
     };
 
-    if (cfg.ema) {
-      indicators.ema = this.calculateEMAs(data);
-    }
-
-    if (cfg.vwap) {
-      indicators.vwap = this.calculateVWAP(data);
-    }
-
-    if (cfg.rsi) {
-      indicators.rsi = this.calculateRSI(data);
-    }
-
-    if (cfg.macd) {
-      indicators.macd = this.calculateMACD(data);
-    }
-
-    if (cfg.adx) {
-      indicators.adx = this.calculateADX(data);
-    }
-
-    if (cfg.atr) {
-      indicators.atr = this.calculateATR(data);
-    }
-
-    if (cfg.bollinger) {
-      indicators.bollinger = this.calculateBollingerBands(data);
-    }
-
-    if (cfg.psar) {
-      indicators.psar = this.calculatePSAR(data);
-    }
-
-    if (cfg.stochastic) {
-      indicators.stochastic = this.calculateStochastic(data);
-    }
-
-    if (cfg.kama) {
-      indicators.kama = this.calculateKAMA(data);
-    }
-
-    if (cfg.obv) {
-      indicators.obv = this.calculateOBV(data);
-    }
-
-    if (cfg.supertrend) {
-      indicators.supertrend = this.calculateSupertrend(data);
-    }
+    if (cfg.ema) indicators.ema = this.calculateEMAs(data);
+    if (cfg.vwap) indicators.vwap = this.calculateVWAP(data);
+    if (cfg.rsi) indicators.rsi = this.calculateRSI(data);
+    if (cfg.macd) indicators.macd = this.calculateMACD(data);
+    if (cfg.adx) indicators.adx = this.calculateADX(data);
+    if (cfg.atr) indicators.atr = this.calculateATR(data);
+    if (cfg.bollinger) indicators.bollinger = this.calculateBollingerBands(data);
+    if (cfg.psar) indicators.psar = this.calculatePSAR(data);
+    if (cfg.stochastic) indicators.stochastic = this.calculateStochastic(data);
+    if (cfg.kama) indicators.kama = this.calculateKAMA(data);
+    if (cfg.obv) indicators.obv = this.calculateOBV(data);
+    if (cfg.supertrend) indicators.supertrend = this.calculateSupertrend(data);
 
     return indicators;
   }
