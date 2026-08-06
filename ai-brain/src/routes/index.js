@@ -12,6 +12,7 @@ router.get('/ai/database', (req, res) => AIController.getDatabaseData(req, res))
 // Controle e Status (Resolvendo os 404 do log)
 router.get('/status', (req, res) => AIController.getStatus(req, res));
 router.get('/health', (req, res) => AIController.getHealth(req, res));
+router.get('/ai/active-trade', (req, res) => AIController.getActiveTrade(req, res));
 router.post('/ai/control', (req, res) => AIController.controlStatus(req, res));
 router.post('/ai/reset', (req, res) => AIController.resetDatabase(req, res));
 router.get('/ai/status/control', (req, res) => AIController.controlStatus(req, res));
