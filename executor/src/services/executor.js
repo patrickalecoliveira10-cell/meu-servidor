@@ -150,6 +150,11 @@ const executorService = {
         entry_price: parseFloat(dbPos.entry_price) / 10000000000
       });
 
+      // ATUALIZA MOTIVO: Garante que o App Android mostre a análise em tempo real, mesmo em 'hold'
+      if (decision.reason) {
+        this.lastReasons[symbol] = decision.reason;
+      }
+
       if (decision.action !== 'hold') {
         logger.info(`[DYNAMIC] Action for ${symbol}: ${decision.action} - ${decision.reason}`);
 
@@ -309,11 +314,12 @@ const executorService = {
 
         // Registrar a abertura da operação no DB
         try {
+          const scaledPrice = BigInt(Math.round(currentPrice * 10000000000));
           await db.query(
             'INSERT INTO trading_ai.operations (symbol, side, entry_price, status, opened_at) VALUES ($1, $2, $3, $4, NOW())',
-            [symbol, side, currentPrice, 'OPEN']
+            [symbol, side, scaledPrice, 'OPEN']
           );
-          logger.info(`[DB] Operação registrada para ${symbol}`);
+          logger.info(`[DB] Operação registrada para ${symbol} com preço escalado ${scaledPrice}`);
         } catch (dbErr) {
           logger.warn('Erro ao registrar no DB, mas ordem foi enviada:', dbErr.message);
         }
@@ -426,10 +432,14 @@ const executorService = {
           await bybitService.cancelAllOrders(coin_id);
 
           try {
+            const exitPrice = activePos.markPrice || activePos.avgPrice || 0;
+            const scaledExitPrice = BigInt(Math.round(parseFloat(exitPrice) * 10000000000));
+
             await db.query(
               "UPDATE trading_ai.operations SET status = 'CLOSED', exit_price = $1, close_time = NOW() WHERE symbol = $2 AND status = 'OPEN'",
-              [activePos.markPrice || 0, coin_id]
+              [scaledExitPrice, coin_id]
             );
+            logger.info(`[DB] Operação encerrada para ${coin_id} com preço ${scaledExitPrice}`);
           } catch (err) { logger.error('DB Update error (close):', err.message); }
           break;
       }
