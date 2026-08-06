@@ -109,6 +109,43 @@ class Database {
           }
         }
 
+        // --- MIGRATION: OPERATIONS TABLE ---
+        try {
+            await this.pool.query(`
+                CREATE TABLE IF NOT EXISTS trading_ai.operations (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    symbol VARCHAR(20) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    entry_price BIGINT NOT NULL,
+                    exit_price BIGINT,
+                    stop_loss BIGINT,
+                    take_profit BIGINT,
+                    trailing_stop INTEGER,
+                    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+                    partial_exit_done BOOLEAN DEFAULT FALSE,
+                    partial_entry_count INTEGER DEFAULT 0,
+                    last_analysis TEXT,
+                    opened_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    close_time TIMESTAMP WITH TIME ZONE,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+            `);
+
+            // Garantir colunas para gestão dinâmica
+            const dynamicCols = [
+                "ALTER TABLE trading_ai.operations ADD COLUMN IF NOT EXISTS trailing_stop INTEGER",
+                "ALTER TABLE trading_ai.operations ADD COLUMN IF NOT EXISTS partial_exit_done BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE trading_ai.operations ADD COLUMN IF NOT EXISTS partial_entry_count INTEGER DEFAULT 0",
+                "ALTER TABLE trading_ai.operations ADD COLUMN IF NOT EXISTS last_analysis TEXT"
+            ];
+
+            for (const colQuery of dynamicCols) {
+                await this.pool.query(colQuery).catch(() => {});
+            }
+        } catch (e) {
+            logger.error('Error creating/updating operations table:', e.message);
+        }
+
         logger.info('Database schema synchronization and migrations finished.');
       } else {
         logger.error(`CRITICAL: Schema file MISSING at ${schemaPath}`);
