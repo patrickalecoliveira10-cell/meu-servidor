@@ -320,55 +320,56 @@ class IndicatorsCalculator {
 
   // Calculate all indicators
   calculateAll(data) {
+    const cfg = this.config;
     const indicators = {
       timestamp: data[data.length - 1].timestamp || Date.now(),
     };
 
-    if (this.config.ema) {
+    if (cfg.ema) {
       indicators.ema = this.calculateEMAs(data);
     }
 
-    if (this.config.vwap) {
+    if (cfg.vwap) {
       indicators.vwap = this.calculateVWAP(data);
     }
 
-    if (this.config.rsi) {
+    if (cfg.rsi) {
       indicators.rsi = this.calculateRSI(data);
     }
 
-    if (this.config.macd) {
+    if (cfg.macd) {
       indicators.macd = this.calculateMACD(data);
     }
 
-    if (this.config.adx) {
+    if (cfg.adx) {
       indicators.adx = this.calculateADX(data);
     }
 
-    if (this.config.atr) {
+    if (cfg.atr) {
       indicators.atr = this.calculateATR(data);
     }
 
-    if (this.config.bollinger) {
+    if (cfg.bollinger) {
       indicators.bollinger = this.calculateBollingerBands(data);
     }
 
-    if (this.config.psar) {
+    if (cfg.psar) {
       indicators.psar = this.calculatePSAR(data);
     }
 
-    if (this.config.stochastic) {
+    if (cfg.stochastic) {
       indicators.stochastic = this.calculateStochastic(data);
     }
 
-    if (this.config.kama) {
+    if (cfg.kama) {
       indicators.kama = this.calculateKAMA(data);
     }
 
-    if (this.config.obv) {
+    if (cfg.obv) {
       indicators.obv = this.calculateOBV(data);
     }
 
-    if (this.config.supertrend) {
+    if (cfg.supertrend) {
       indicators.supertrend = this.calculateSupertrend(data);
     }
 
