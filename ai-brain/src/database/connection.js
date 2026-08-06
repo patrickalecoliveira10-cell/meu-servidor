@@ -98,7 +98,29 @@ class Database {
           "ALTER TABLE trading_ai.ai_operation_management ALTER COLUMN take_profit TYPE BIGINT",
 
           // Tabela market_snapshots legada para scanner_snapshots
-          "DROP TABLE IF EXISTS trading_ai.market_snapshots CASCADE"
+          "DROP TABLE IF EXISTS trading_ai.market_snapshots CASCADE",
+
+          // Novas tabelas para o módulo Learning
+          `CREATE TABLE IF NOT EXISTS trading_ai.ai_patterns (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            pattern_name VARCHAR(100) NOT NULL,
+            coin_id VARCHAR(20),
+            timeframe VARCHAR(10),
+            pattern_type VARCHAR(20),
+            success_rate SMALLINT,
+            occurrence_count INTEGER DEFAULT 1,
+            pattern_data JSONB,
+            last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE(pattern_name, coin_id)
+          )`,
+          `CREATE TABLE IF NOT EXISTS trading_ai.ai_learning_logs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            log_type VARCHAR(50),
+            coin_id VARCHAR(20),
+            message TEXT,
+            data JSONB,
+            timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+          )`
         ];
 
         for (const migration of migrations) {
