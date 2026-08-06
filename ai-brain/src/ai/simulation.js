@@ -9,8 +9,7 @@ class Simulation {
 
   async init(brain) {
     this.brain = brain;
-    // Lazy load learning to avoid circular dependency at boot
-    this.learning = require('./learning.js');
+    this.learning = brain.learning;
     logger.info('Simulation module initialized');
   }
 
