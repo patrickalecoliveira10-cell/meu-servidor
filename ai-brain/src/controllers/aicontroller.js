@@ -93,7 +93,7 @@ class AIController {
       // EXTRAÇÃO DIRETA E SEGURA
       const examples = parseInt(live.ai_examples || 0);
       const simulatedOps = parseInt(live.total_simulated_ops || 0);
-      const realOps = parseInt(live.total_ai_decisions || 0);
+      const realOps = parseInt(live.total_real_ops || 0);
 
       const winRateRaw = parseFloat(stats.win_rate || 0.65);
       const winRate = winRateRaw > 1 ? winRateRaw / 100 : winRateRaw;
