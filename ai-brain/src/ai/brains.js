@@ -16,9 +16,18 @@ class Brain {
       logger.info('Initializing AI Brain...');
 
       // Lazy load to break circular dependencies
-      this.intelligence = require('./intelligence.js');
-      this.learning = require('./learning.js');
-      this.simulation = require('./simulation.js');
+      const intelModule = require('./intelligence.js');
+      const learningModule = require('./learning.js');
+      const simulationModule = require('./simulation.js');
+
+      // Defensive assignment (handles instance or class with constructor)
+      this.intelligence = intelModule.init ? intelModule : (typeof intelModule === 'function' ? new intelModule() : intelModule);
+      this.learning = learningModule.init ? learningModule : (typeof learningModule === 'function' ? new learningModule() : learningModule);
+      this.simulation = simulationModule.init ? simulationModule : (typeof simulationModule === 'function' ? new simulationModule() : simulationModule);
+
+      if (!this.intelligence.init || !this.learning.init || !this.simulation.init) {
+          throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence.init}), Learn(${!!this.learning.init}), Sim(${!!this.simulation.init})`);
+      }
 
       // Initialize sub-modules with brain reference
       await this.intelligence.init(this);
