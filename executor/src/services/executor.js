@@ -116,6 +116,7 @@ const executorService = {
 
     try {
       const symbol = (decision.coin_id || decision.symbol || '').toUpperCase();
+
       const side = (decision.side || 'Buy').toLowerCase() === 'buy' ? 'Buy' : 'Sell';
 
       // SALVA O MOTIVO (RACIOCÍNIO) ANTES DE QUALQUER TRAVA
