@@ -184,6 +184,7 @@ const executorService = {
   },
 
   async checkAIRecommendations(cycleId = 'default') {
+    logger.info(`[DEBUG EXECUTOR] checkAIRecommendations chamado. brainInstance: ${!!this.brainInstance}`);
     try {
       let signals;
 
