@@ -89,7 +89,13 @@ class Database {
             last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             UNIQUE(indicator_name, COALESCE(coin_id, '00000000-0000-0000-0000-000000000000'), COALESCE(timeframe, 'ALL'))
           )`,
-          "UPDATE trading_ai.ai_coin_learning SET total_examples = 32767 WHERE total_examples > 32767",
+          // Fix SMALLINT overflow for learning counters - handle existing overflow data first
+          "UPDATE trading_ai.ai_coin_learning SET total_examples = 32767 WHERE total_examples > 32767 OR total_examples IS NULL",
+          "UPDATE trading_ai.ai_global_learning SET total_examples = 32767 WHERE total_examples > 32767 OR total_examples IS NULL",
+          "UPDATE trading_ai.ai_coin_learning SET total_decisions = 32767 WHERE total_decisions > 32767 OR total_decisions IS NULL",
+          "UPDATE trading_ai.ai_global_learning SET total_decisions = 32767 WHERE total_decisions > 32767 OR total_decisions IS NULL",
+          "UPDATE trading_ai.ai_coin_learning SET correct_decisions = 32767 WHERE correct_decisions > 32767 OR correct_decisions IS NULL",
+          "UPDATE trading_ai.ai_global_learning SET correct_decisions = 32767 WHERE correct_decisions > 32767 OR correct_decisions IS NULL",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN total_examples TYPE INTEGER",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN total_decisions TYPE INTEGER",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN correct_decisions TYPE INTEGER",
