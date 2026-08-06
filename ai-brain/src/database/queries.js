@@ -182,11 +182,17 @@ const queries = {
 
   async getOpenSimulatedOperations(coinId = null) {
     try {
+      let resolvedId = coinId;
+      // Se for um símbolo (string longa que não é UUID), resolvemos primeiro
+      if (coinId && typeof coinId === 'string' && !coinId.includes('-')) {
+          resolvedId = await this.getInternalCoinId(coinId);
+      }
+
       let query = "SELECT * FROM trading_ai.ai_simulated_operations WHERE result IS NULL";
       let params = [];
-      if (coinId) {
-        query += " AND coin_id = $1";
-        params = [coinId];
+      if (resolvedId) {
+        query += " AND (coin_id = $1 OR coin_id::text = $1)";
+        params = [resolvedId];
       }
       const result = await db.query(query, params);
       return result.rows.map(row => ({
@@ -195,7 +201,10 @@ const queries = {
         stop_loss: parseFloat(row.stop_loss) / 10000000000,
         take_profit: parseFloat(row.take_profit) / 10000000000
       }));
-    } catch (e) { return []; }
+    } catch (e) {
+      console.error('Error fetching open simulations:', e.message);
+      return [];
+    }
   },
 
   async updateSimulatedOperation(sim) {
@@ -216,18 +225,33 @@ const queries = {
         SELECT
           (SELECT COUNT(*) FROM trading_ai.operations) as total_real_ops,
           (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations) as total_simulated_ops,
-          (SELECT total_examples FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as ai_examples
+          (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations WHERE result = 'win') as total_wins,
+          (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations WHERE result = 'loss') as total_losses,
+          (SELECT total_examples FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as ai_examples,
+          (SELECT total_decisions FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as total_decisions,
+          (SELECT correct_decisions FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as correct_decisions,
+          (SELECT avg_confidence FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as avg_confidence
       `;
       const result = await db.query(query);
       const row = result.rows[0];
+      const totalSims = parseInt(row?.total_simulated_ops || 0);
+      const wins = parseInt(row?.total_wins || 0);
+      const losses = parseInt(row?.total_losses || 0);
+      const closed = wins + losses;
       return {
         ai_examples: parseInt(row?.ai_examples || 0),
         total_real_ops: parseInt(row?.total_real_ops || 0),
-        total_simulated_ops: parseInt(row?.total_simulated_ops || 0)
+        total_simulated_ops: totalSims,
+        total_decisions: parseInt(row?.total_decisions || 0),
+        correct_decisions: parseInt(row?.correct_decisions || 0),
+        avg_confidence: (parseFloat(row?.avg_confidence || 0)) / 100,
+        wins,
+        losses,
+        win_rate: closed > 0 ? wins / closed : 0
       };
     } catch (e) {
       console.error('LiveStatsError:', e.message);
-      return { ai_examples: 0, total_real_ops: 0, total_simulated_ops: 0 };
+      return { ai_examples: 0, total_real_ops: 0, total_simulated_ops: 0, total_decisions: 0, correct_decisions: 0, avg_confidence: 0, wins: 0, losses: 0, win_rate: 0 };
     }
   },
 
