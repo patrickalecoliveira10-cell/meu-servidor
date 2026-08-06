@@ -3,8 +3,16 @@ const queries = require('../database/queries.js');
 
 class Brain {
   constructor() {
-    this.weights = { global: { 'RSI': 1.0, 'MACD': 1.0, 'ADX': 0.8 }, coins: {} };
-    this.config = { confidence_threshold: 0.7 };
+    this.weights = {
+      global: {
+        'RSI': 1.0, 'MACD': 1.0, 'ADX': 0.8,
+        'EMA': 0.9, 'BOLLINGER': 0.7, 'SUPERTREND': 0.85,
+        'VWAP': 0.75, 'STOCHASTIC': 0.6, 'ICHIMOKU': 0.8,
+        'HEIKEN_ASHI': 0.65, 'OBV': 0.6
+      },
+      coins: {}
+    };
+    this.config = { confidence_threshold: 0.68 };
     this.activeRecommendations = new Map();
     this.intelligence = null;
     this.learning = null;
