@@ -46,11 +46,11 @@ class Management {
       }
 
       // 2. TRAILING STOP DINÂMICO (Ativação com 0.6 ATR)
-      // Mais sensível para moedas voláteis como HOME
       if (profit > (atrValue * 0.6) && !operation.ts_active) {
         decision = 'activate_trailing';
-        params.trailing_stop = (atrValue * 0.4).toFixed(6); // Distância curta para não devolver lucro
-        reason = 'Profit > 0.6 ATR. Activating Sensitive Trailing Stop.';
+        // Calcula a distância absoluta em vez de apenas retornar um valor fixo
+        params.trailing_stop = (atrValue * 0.4).toFixed(8);
+        reason = `Lucro superou 0.6 ATR (${profitPct.toFixed(2)}%). Ativando Trailing Stop nativo.`;
         operation.ts_active = true;
       }
 
@@ -71,12 +71,12 @@ class Management {
             timeframe: operation.timeframe || '15m'
         }, weights, config);
 
-        logger.info(`[MANAGEMENT] ${coin_id} Re-analysis: WinProb ${(reAnalysis.win_probability * 100).toFixed(1)}% | Current ROI: ${profitPct.toFixed(2)}%`);
+        logger.info(`[MANAGEMENT] ${coin_id} Re-analysis: Confiança ${(reAnalysis.confidence * 100).toFixed(1)}% | ROI Atual: ${profitPct.toFixed(2)}%`);
 
-        // Se a probabilidade de vitória cair abaixo de 50%, fecha preventivamente
-        if (reAnalysis.win_probability < 0.50) {
+        // Se a confiança na direção atual cair abaixo de 50%, fecha preventivamente
+        if (reAnalysis.confidence < 0.50) {
             decision = 'close';
-            reason = `High Risk detected: ROI ${profitPct.toFixed(2)}% and Recovery Prob below 50% (${(reAnalysis.win_probability * 100).toFixed(1)}%).`;
+            reason = `Alto risco detectado: ROI ${profitPct.toFixed(2)}% e Confiança de recuperação abaixo de 50% (${(reAnalysis.confidence * 100).toFixed(1)}%).`;
         }
       }
 
