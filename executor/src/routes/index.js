@@ -118,21 +118,30 @@ router.post('/manage', async (req, res) => {
 // NOVO: Ação genérica do App Android (Mapeia para fechar)
 router.post('/action', async (req, res) => {
   try {
-    const { action, symbol } = req.body;
-    logger.info(`[ANDROID_ACTION] ${action} solicitado para ${symbol}`);
+    const body = req.body || {};
+    // Vasculha por qualquer campo que possa conter a ação e o símbolo
+    const action = body.action;
+    const symbol = body.symbol || body.operationId || body.coin_id || body.id;
+
+    logger.info(`[ANDROID_ACTION] ${action} recebido. Alvo: ${symbol || 'NÃO IDENTIFICADO'}`);
+
+    if (!symbol && (action === 'CLOSE' || action === 'CLOSE_OPERATION')) {
+      logger.warn('[ANDROID_ACTION] Tentativa de fechar sem símbolo definido. Body:', JSON.stringify(body));
+      return sendResponse(res, false, null, "Symbol/OperationId is required", 400);
+    }
 
     // GARANTE QUE USA A INSTÂNCIA VIVA DO SUPER SERVIDOR
     const activeExecutor = global.liveExecutorService || executorService;
 
-    if (action === 'CLOSE') {
+    if (action === 'CLOSE' || action === 'CLOSE_OPERATION') {
       const result = await activeExecutor.updatePositionManagement({
-        coin_id: symbol,
+        coin_id: symbol.toString().toUpperCase(),
         decision: 'close'
       });
       return sendResponse(res, true, result, `Position ${symbol} closed`);
     }
 
-    sendResponse(res, true, null, "Action received");
+    sendResponse(res, true, null, "Action processed");
   } catch (error) {
     logger.error('Error in android action:', error);
     sendResponse(res, false, null, error.message, 500);
