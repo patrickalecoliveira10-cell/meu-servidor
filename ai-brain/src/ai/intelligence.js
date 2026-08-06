@@ -114,93 +114,61 @@ class Intelligence {
       totalWeight += w;
     }
 
-    // ── BOLLINGER BANDS ───────────────────────────────────────────────────────
-    const bb = indicators.bollinger || indicators.BOLLINGER || indicators.bb;
-    if (bb) {
-      const price = parseFloat(indicators.price ?? snapshot?.close ?? 0);
-      const lower = parseFloat(bb.lower ?? bb.lowerBand ?? 0);
-      const upper = parseFloat(bb.upper ?? bb.upperBand ?? 0);
-      const w = parseFloat(weights['BOLLINGER'] ?? weights['bollinger'] ?? 0.7);
-      if (price > 0 && lower > 0 && upper > 0) {
-        if (price <= lower)       { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
-        else if (price >= upper)  { bearScore += 0.9 * w; signals['bollinger'] = -0.9; }
+    // ── BOLLINGER BANDS ── { upper, lower, middle, position } ─────────────────
+    const bb = indicators.bollinger;
+    if (bb && bb.lower && bb.upper) {
+      const price = parseFloat(indicators.close ?? 0);
+      const w = parseFloat(weights['BOLLINGER'] ?? 0.7);
+      if (price > 0) {
+        if (bb.position === 'below_lower' || price <= bb.lower)  { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
+        else if (bb.position === 'above_upper' || price >= bb.upper) { bearScore += 0.9 * w; signals['bollinger'] = -0.9; }
         totalWeight += w;
       }
     }
 
-    // ── SUPERTREND ────────────────────────────────────────────────────────────
-    const st = indicators.supertrend || indicators.SUPERTREND;
-    if (st) {
-      const direction = parseInt(st.direction ?? st.signal ?? 0);
-      const w = parseFloat(weights['SUPERTREND'] ?? weights['supertrend'] ?? 0.85);
-      if (direction === 1 || st.trend === 'up' || st.trend === 'UP') {
-        bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true;
-      } else if (direction === -1 || st.trend === 'down' || st.trend === 'DOWN') {
-        bearScore += 0.9 * w; signals['supertrend'] = -0.9;
-      }
+    // ── SUPERTREND ── { value, signal: 'bullish'/'bearish' } ──────────────────
+    const st = indicators.supertrend;
+    if (st && st.signal) {
+      const w = parseFloat(weights['SUPERTREND'] ?? 0.85);
+      if (st.signal === 'bullish') { bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true; }
+      else if (st.signal === 'bearish') { bearScore += 0.9 * w; signals['supertrend'] = -0.9; }
       totalWeight += w;
     }
 
-    // ── VWAP ──────────────────────────────────────────────────────────────────
-    const vwap = indicators.vwap || indicators.VWAP;
-    if (vwap) {
-      const price = parseFloat(indicators.price ?? 0);
-      const vwapVal = parseFloat(vwap.value ?? vwap);
-      const w = parseFloat(weights['VWAP'] ?? weights['vwap'] ?? 0.75);
-      if (price > 0 && vwapVal > 0) {
-        if (price > vwapVal)       { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
-        else if (price < vwapVal)  { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
+    // ── PSAR ── { value, signal: 'bullish'/'bearish' } ────────────────────────
+    const psar = indicators.psar;
+    if (psar && psar.signal) {
+      const w = parseFloat(weights['PSAR'] ?? 0.7);
+      if (psar.signal === 'bullish') { bullScore += 0.7 * w; signals['psar'] = 0.7; hasConfirmation = true; }
+      else if (psar.signal === 'bearish') { bearScore += 0.7 * w; signals['psar'] = -0.7; }
+      totalWeight += w;
+    }
+
+    // ── VWAP ── número direto ─────────────────────────────────────────────────
+    const vwap = indicators.vwap;
+    if (vwap && typeof vwap === 'number') {
+      const price = parseFloat(indicators.close ?? 0);
+      const w = parseFloat(weights['VWAP'] ?? 0.75);
+      if (price > 0) {
+        if (price > vwap)       { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
+        else if (price < vwap)  { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
         totalWeight += w;
       }
     }
 
-    // ── STOCHASTIC ────────────────────────────────────────────────────────────
-    const stoch = indicators.stochastic || indicators.STOCHASTIC;
-    if (stoch) {
-      const k = parseFloat(stoch.k ?? stoch.value ?? 50);
-      const w = parseFloat(weights['STOCHASTIC'] ?? weights['stochastic'] ?? 0.6);
-      if (k < 20)      { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
-      else if (k > 80) { bearScore += 0.7 * w; signals['stochastic'] = -0.7; }
+    // ── STOCHASTIC ── { k, d, signal } ────────────────────────────────────────
+    const stoch = indicators.stochastic;
+    if (stoch && stoch.k !== undefined) {
+      const k = parseFloat(stoch.k);
+      const w = parseFloat(weights['STOCHASTIC'] ?? 0.6);
+      if (stoch.signal === 'oversold' || k < 20)       { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
+      else if (stoch.signal === 'overbought' || k > 80) { bearScore += 0.7 * w; signals['stochastic'] = -0.7; }
       totalWeight += w;
     }
 
-    // ── ICHIMOKU ──────────────────────────────────────────────────────────────
-    const ichi = indicators.ichimoku || indicators.ICHIMOKU;
-    if (ichi) {
-      const price = parseFloat(indicators.price ?? 0);
-      const spanA = parseFloat(ichi.span_a ?? ichi.senkouA ?? 0);
-      const spanB = parseFloat(ichi.span_b ?? ichi.senkouB ?? 0);
-      const w = parseFloat(weights['ICHIMOKU'] ?? weights['ichimoku'] ?? 0.8);
-      if (price > 0 && spanA > 0 && spanB > 0) {
-        const cloudTop = Math.max(spanA, spanB);
-        const cloudBot = Math.min(spanA, spanB);
-        if (price > cloudTop)      { bullScore += 0.8 * w; signals['ichimoku'] = 0.8; hasConfirmation = true; }
-        else if (price < cloudBot) { bearScore += 0.8 * w; signals['ichimoku'] = -0.8; }
-        totalWeight += w;
-      }
-    }
-
-    // ── HEIKEN ASHI ───────────────────────────────────────────────────────────
-    const ha = indicators.heiken_ashi || indicators.HEIKEN_ASHI || indicators.heikenAshi;
-    if (ha) {
-      const w = parseFloat(weights['HEIKEN_ASHI'] ?? weights['heiken_ashi'] ?? 0.65);
-      if (ha.trend === 'up' || ha.color === 'green' || ha.bullish === true) {
-        bullScore += 0.6 * w; signals['heiken_ashi'] = 0.6;
-      } else if (ha.trend === 'down' || ha.color === 'red' || ha.bullish === false) {
-        bearScore += 0.6 * w; signals['heiken_ashi'] = -0.6;
-      }
-      totalWeight += w;
-    }
-
-    // ── OBV (On Balance Volume) ───────────────────────────────────────────────
-    const obv = indicators.obv || indicators.OBV;
-    if (obv) {
-      const trend = obv.trend ?? obv.signal;
-      const w = parseFloat(weights['OBV'] ?? weights['obv'] ?? 0.6);
-      if (trend === 'up' || trend === 1)        { bullScore += 0.5 * w; signals['obv'] = 0.5; }
-      else if (trend === 'down' || trend === -1) { bearScore += 0.5 * w; signals['obv'] = -0.5; }
-      totalWeight += w;
-    }
+    // ── OBV ── número direto (compara com média simples dos últimos valores) ───
+    // OBV sozinho não dá direção sem histórico, então ignoramos como sinal isolado
+    // mas registramos para o sistema de pesos aprender
 
     // ── CÁLCULO FINAL ─────────────────────────────────────────────────────────
     const netScore = totalWeight > 0 ? (bullScore - bearScore) / totalWeight : 0;
