@@ -78,6 +78,10 @@ async function start() {
         await db.testConnection();
         await Brain.initialize();
 
+        // EXPORTE GLOBAL PARA OS CONTROLLERS ACESSAREM A INSTÂNCIA VIVA
+        global.liveBrainInstance = Brain;
+        global.liveExecutorService = executorService;
+
         // CONEXÃO DIRETA: O Executor agora "ouve" o Brain sem precisar de HTTP
         if (executorService.setBrain) {
             executorService.setBrain(Brain);
