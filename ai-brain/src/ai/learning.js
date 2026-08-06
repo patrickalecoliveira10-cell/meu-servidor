@@ -42,13 +42,14 @@ class Learning {
       // avg_confidence é calculado sobre todos os exemplos processados
       stats.avg_confidence = (parseFloat(stats.avg_confidence || 0.5) * (stats.total_examples - 1) + decision.confidence) / stats.total_examples;
 
-      // Log de progresso simplificado
+      // Log de progresso usando win rate real das operações simuladas (mesma fonte do app)
       if (stats.total_examples % 20 === 0) {
-        const winRateDisplay = stats.total_decisions > 0
-          ? (parseFloat(stats.win_rate || 0) * 100).toFixed(2) + '%'
+        const liveStats = await queries.getLiveStats();
+        const winRateDisplay = liveStats.total_simulated_ops > 0
+          ? ((liveStats.wins / (liveStats.wins + liveStats.losses)) * 100).toFixed(2) + '%'
           : 'Waiting for first closed trade...';
 
-        logger.info(`AI Progress: ${stats.total_examples}/1000 Examples. Closed Trades: ${stats.total_decisions} | Win Rate: ${winRateDisplay}`);
+        logger.info(`AI Progress: ${stats.total_examples}/1000 Examples. Closed Trades: ${liveStats.wins + liveStats.losses} | Win Rate: ${winRateDisplay}`);
       }
 
       await queries.updateGlobalLearning(stats);
