@@ -104,7 +104,6 @@ class Brain {
           stayReason: decision.stayReason,
           timestamp: now
         });
-        logger.info(`[DEBUG BRAIN] Armazenado em activeRecommendations: ${coin_id}, decision=${decision.decision}, side=${decision.side}, confidence=${decision.confidence}`);
       }
 
       logger.info(`[BRAIN] Analysis for ${coin_id}: ${decision.stayReason} Confidence: ${Math.round(decision.confidence * 100)}%`);
@@ -117,16 +116,13 @@ class Brain {
 
   getRecommendations() {
     const now = new Date();
-    logger.info(`[DEBUG BRAIN] getRecommendations chamado em ${now.toISOString()}. activeRecommendations size: ${this.activeRecommendations.size}`);
     // Retenção de 5 minutos para garantir que o App sempre tenha dados
     for (const [id, rec] of this.activeRecommendations.entries()) {
       if (now - rec.timestamp > 300000) {
         this.activeRecommendations.delete(id);
       }
     }
-    const result = Array.from(this.activeRecommendations.values());
-    logger.info(`[DEBUG BRAIN] getRecommendations retornando ${result.length} sinais`);
-    return result;
+    return Array.from(this.activeRecommendations.values());
   }
 
   getStatus() {
