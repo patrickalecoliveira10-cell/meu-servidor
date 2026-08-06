@@ -1,5 +1,6 @@
 const logger = require('../logs/logger.js');
 const queries = require('../database/queries.js');
+const Learning = require('./learning.js');
 
 class Simulation {
   constructor() {
@@ -119,7 +120,6 @@ class Simulation {
           logger.info(`Simulation closed for ${sim.coin_id}: ${result.toUpperCase()} (${profitLoss.toFixed(2)}%)`);
 
           // Feedback to Learning module to adjust weights
-          const Learning = require('./learning.js');
           await Learning.adjustWeightsBasedOnResult(sim, result === 'win');
         }
       }
