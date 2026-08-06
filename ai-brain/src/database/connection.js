@@ -23,7 +23,9 @@ class Database {
 
     // Configura o search_path para priorizar o schema trading_ai
     this.pool.on('connect', (client) => {
-      client.query('SET search_path TO trading_ai, public');
+      client.query('SET search_path TO trading_ai, public').catch(err => {
+        logger.error('Error setting search_path:', err);
+      });
     });
   }
 
