@@ -28,12 +28,21 @@ class Intelligence {
       this.stats.total_snapshots++;
       const { coin_id, timeframe, indicators } = snapshot;
 
+      // Inject close price into indicators so BB/VWAP can compare against it
+      const enrichedIndicators = { ...( indicators || {}), close: snapshot.close, price: snapshot.close };
+
+      // Debug: log which indicators arrived (once every 200 snapshots)
+      if (this.stats.total_snapshots % 200 === 0) {
+        const present = Object.keys(enrichedIndicators).filter(k => enrichedIndicators[k] != null && k !== 'timestamp');
+        logger.info(`[INTEL-DEBUG] Indicators present for ${coin_id}: ${present.join(', ')}`);
+      }
+
       const currentWeights = weights.coins?.[coin_id] || weights.global;
-      const analysis = this.calculateProbabilities(indicators || {}, currentWeights);
-      const setupQuality = this.evaluateSetup(indicators || {});
-      const trendStrength = this.evaluateTrend(indicators || {});
+      const analysis = this.calculateProbabilities(enrichedIndicators, currentWeights);
+      const setupQuality = this.evaluateSetup(enrichedIndicators);
+      const trendStrength = this.evaluateTrend(enrichedIndicators);
       const confidence = this.calculateConfidence(analysis, setupQuality, trendStrength);
-      const stayReason = this.generateStayReason(indicators || {}, confidence, analysis);
+      const stayReason = this.generateStayReason(enrichedIndicators, confidence, analysis);
       const decisionResult = this.determineDecision(confidence, analysis);
       const price = parseFloat(snapshot.price || snapshot.close || 0);
 
@@ -84,7 +93,7 @@ class Intelligence {
     if (macd) {
       const hist = parseFloat(macd.histogram ?? macd.hist ?? 0);
       const w = parseFloat(weights['MACD'] ?? weights['macd'] ?? 1.0);
-      if (hist > 0)      { bullScore += 0.7 * w; signals['macd'] = 0.7; hasConfirmation = true; }
+      if (hist > 0)  { bullScore += 0.7 * w; signals['macd'] = 0.7; hasConfirmation = true; }
       else if (hist < 0) { bearScore += 0.7 * w; signals['macd'] = -0.7; }
       totalWeight += w;
     }
@@ -94,7 +103,7 @@ class Intelligence {
     if (adx) {
       const val = parseFloat(adx.value ?? adx);
       const w = parseFloat(weights['ADX'] ?? weights['adx'] ?? 0.8);
-      if (val > 25)      { bullScore += 0.5 * w; signals['adx'] = 0.5; hasConfirmation = true; }
+      if (val > 25) { bullScore += 0.5 * w; signals['adx'] = 0.5; hasConfirmation = true; }
       else if (val < 15) { bearScore += 0.2 * w; signals['adx'] = -0.2; }
       totalWeight += w;
     }
@@ -109,6 +118,7 @@ class Intelligence {
       } else {
         bearScore += 0.8 * w; signals['ema'] = -0.8;
       }
+      // Preço acima da EMA21 = tendência de alta
       if (price > ema.ema_21) { bullScore += 0.3 * w; }
       totalWeight += w;
     }
@@ -119,7 +129,7 @@ class Intelligence {
       const price = parseFloat(indicators.close ?? 0);
       const w = parseFloat(weights['BOLLINGER'] ?? 0.7);
       if (price > 0) {
-        if (bb.position === 'below_lower' || price <= bb.lower)      { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
+        if (bb.position === 'below_lower' || price <= bb.lower)  { bullScore += 0.9 * w; signals['bollinger'] = 0.9; hasConfirmation = true; }
         else if (bb.position === 'above_upper' || price >= bb.upper) { bearScore += 0.9 * w; signals['bollinger'] = -0.9; }
         totalWeight += w;
       }
@@ -129,7 +139,7 @@ class Intelligence {
     const st = indicators.supertrend;
     if (st && st.signal) {
       const w = parseFloat(weights['SUPERTREND'] ?? 0.85);
-      if (st.signal === 'bullish')      { bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true; }
+      if (st.signal === 'bullish') { bullScore += 0.9 * w; signals['supertrend'] = 0.9; hasConfirmation = true; }
       else if (st.signal === 'bearish') { bearScore += 0.9 * w; signals['supertrend'] = -0.9; }
       totalWeight += w;
     }
@@ -138,7 +148,7 @@ class Intelligence {
     const psar = indicators.psar;
     if (psar && psar.signal) {
       const w = parseFloat(weights['PSAR'] ?? 0.7);
-      if (psar.signal === 'bullish')      { bullScore += 0.7 * w; signals['psar'] = 0.7; hasConfirmation = true; }
+      if (psar.signal === 'bullish') { bullScore += 0.7 * w; signals['psar'] = 0.7; hasConfirmation = true; }
       else if (psar.signal === 'bearish') { bearScore += 0.7 * w; signals['psar'] = -0.7; }
       totalWeight += w;
     }
@@ -149,8 +159,8 @@ class Intelligence {
       const price = parseFloat(indicators.close ?? 0);
       const w = parseFloat(weights['VWAP'] ?? 0.75);
       if (price > 0) {
-        if (price > vwap)      { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
-        else if (price < vwap) { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
+        if (price > vwap)       { bullScore += 0.6 * w; signals['vwap'] = 0.6; }
+        else if (price < vwap)  { bearScore += 0.6 * w; signals['vwap'] = -0.6; }
         totalWeight += w;
       }
     }
@@ -160,10 +170,14 @@ class Intelligence {
     if (stoch && stoch.k !== undefined) {
       const k = parseFloat(stoch.k);
       const w = parseFloat(weights['STOCHASTIC'] ?? 0.6);
-      if (stoch.signal === 'oversold' || k < 20)        { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
+      if (stoch.signal === 'oversold' || k < 20)       { bullScore += 0.7 * w; signals['stochastic'] = 0.7; }
       else if (stoch.signal === 'overbought' || k > 80) { bearScore += 0.7 * w; signals['stochastic'] = -0.7; }
       totalWeight += w;
     }
+
+    // ── OBV ── número direto (compara com média simples dos últimos valores) ───
+    // OBV sozinho não dá direção sem histórico, então ignoramos como sinal isolado
+    // mas registramos para o sistema de pesos aprender
 
     // ── CÁLCULO FINAL ─────────────────────────────────────────────────────────
     const netScore = totalWeight > 0 ? (bullScore - bearScore) / totalWeight : 0;
@@ -214,9 +228,18 @@ class Intelligence {
     let trendScore = 0;
     let count = 0;
 
-    if (adx) { trendScore += Math.min(1, parseFloat(adx.value ?? 0) / 50); count++; }
-    if (st && st.signal) { trendScore += st.signal === 'bullish' ? 0.8 : 0.2; count++; }
-    if (ema && ema.ema_9 && ema.ema_21) { trendScore += ema.ema_9 > ema.ema_21 ? 0.7 : 0.3; count++; }
+    if (adx) {
+      trendScore += Math.min(1, parseFloat(adx.value ?? 0) / 50);
+      count++;
+    }
+    if (st && st.signal) {
+      trendScore += st.signal === 'bullish' ? 0.8 : 0.2;
+      count++;
+    }
+    if (ema && ema.ema_9 && ema.ema_21) {
+      trendScore += ema.ema_9 > ema.ema_21 ? 0.7 : 0.3;
+      count++;
+    }
 
     return count > 0 ? trendScore / count : 0.5;
   }
@@ -270,6 +293,7 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis) {
+    // Exige: confiança >= 68% + side=buy + pelo menos 1 confirmação (MACD/ADX/EMA/Supertrend/Ichimoku/BB)
     if (confidence >= 0.68 && analysis.side === 'buy' && analysis.hasConfirmation) return 'enter';
     if (confidence >= 0.55) return 'wait';
     return 'not_enter';
