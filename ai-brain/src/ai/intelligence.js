@@ -272,4 +272,4 @@ class Intelligence {
   }
 }
 
-module.exports = new Intelligence();
+module.exports = Intelligence;
