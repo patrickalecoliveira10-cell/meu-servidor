@@ -18,6 +18,32 @@ const executorService = {
     logger.info('[EXECUTOR] Brain instance linked for direct communication');
   },
 
+  // Helper para calcular quantidade com precisão da Bybit
+  async calculateQuantity(symbol, usdtAmount, currentPrice) {
+    try {
+      let qty = (usdtAmount / currentPrice);
+      const instrument = await bybitService.getInstrumentInfo(symbol);
+
+      if (instrument && instrument.lotSizeFilter) {
+        const qtyStep = parseFloat(instrument.lotSizeFilter.qtyStep);
+        const precision = Math.log10(1 / qtyStep);
+        if (precision >= 0) {
+          qty = Math.floor(qty / qtyStep) * qtyStep;
+          qty = qty.toFixed(precision);
+        } else {
+          qty = Math.floor(qty);
+        }
+      } else {
+        if (currentPrice > 100) qty = qty.toFixed(2);
+        else if (currentPrice > 10) qty = qty.toFixed(1);
+        else qty = qty.toFixed(0);
+      }
+      return parseFloat(qty).toString();
+    } catch (e) {
+      return (usdtAmount / currentPrice).toFixed(2);
+    }
+  },
+
   async initialize() {
     try {
       logger.info('Initializing Executor Service Core...');
@@ -244,46 +270,24 @@ const executorService = {
           return { status: 'error', reason: 'could_not_get_price' };
         }
 
-        // Calcula 30% da banca
+        // Calcula 30% da banca atual
         const thirtyPercent = balance * 0.3;
-        // Usa o maior entre 5.2 e 30%
+        // Regra: Mínimo 5.2 ou 30%
         let targetUsdtAmount = Math.max(5.2, thirtyPercent);
 
-        // Proteção extra: não usar mais do que o saldo disponível (deixando margem)
-        if (targetUsdtAmount > balance * 0.9) {
-          targetUsdtAmount = balance * 0.9;
+        // Proteção de saldo
+        if (targetUsdtAmount > balance * 0.95) {
+          targetUsdtAmount = balance * 0.95;
         }
 
-        if (targetUsdtAmount < 5.2 && balance >= 5.2) {
-            targetUsdtAmount = 5.2; // Garante o mínimo se houver saldo
+        if (targetUsdtAmount < 5.2) {
+            logger.warn(`[EXECUTOR] Saldo insuficiente para entrada inicial de 5.2 USDT`);
+            return { status: 'skipped', reason: 'insufficient_balance' };
         }
 
-        // Converte valor em USDT para quantidade da moeda
-        let qty = (targetUsdtAmount / currentPrice);
+        const qty = await this.calculateQuantity(symbol, targetUsdtAmount, currentPrice);
 
-        // Ajuste de precisão baseado nas regras da exchange
-        const instrument = await bybitService.getInstrumentInfo(symbol);
-        if (instrument && instrument.lotSizeFilter) {
-          const qtyStep = parseFloat(instrument.lotSizeFilter.qtyStep);
-          const precision = Math.log10(1 / qtyStep);
-          if (precision >= 0) {
-            qty = Math.floor(qty / qtyStep) * qtyStep;
-            qty = qty.toFixed(precision);
-          } else {
-            qty = Math.floor(qty);
-          }
-          logger.info(`[EXECUTOR] Aplicando precisão para ${symbol}: Step=${qtyStep}, Qty final=${qty}`);
-        } else {
-          // Fallback heurístico
-          if (currentPrice > 100) qty = qty.toFixed(2);
-          else if (currentPrice > 10) qty = qty.toFixed(1);
-          else if (currentPrice > 1) qty = qty.toFixed(1);
-          else qty = Math.floor(qty);
-        }
-
-        qty = parseFloat(qty).toString();
-
-        logger.info(`[EXECUTOR] Banca: ${balance} USDT | Alocando: ${targetUsdtAmount} USDT (${qty} ${symbol})`);
+        logger.info(`[EXECUTOR] Banca: ${balance} USDT | Entrada Inicial: ${targetUsdtAmount} USDT (${qty} ${symbol})`);
 
         const order = await bybitService.placeOrder(
           symbol,
@@ -339,12 +343,24 @@ const executorService = {
       switch (decision) {
         case 'partial_entry':
           const balance = await bybitService.getWalletBalance();
-          const currentPrice = await bybitService.getTickerPrice(coin_id);
-          // Adiciona mais 15% da banca na posição atual
-          let entryAmount = balance * 0.15;
-          let entryQty = (entryAmount / currentPrice).toString();
+          if (balance < 5.2) {
+              logger.warn(`[EXECUTOR] Saldo insuficiente para entrada parcial (Mín 5.2, Atual ${balance})`);
+              return { status: 'ignored', reason: 'insufficient_balance' };
+          }
 
-          logger.info(`[EXECUTOR] Executing partial entry for ${coin_id}: ${entryAmount} USDT`);
+          const currentPrice = await bybitService.getTickerPrice(coin_id);
+          // Adiciona 15% da banca ou 5.2 (o que for maior)
+          let entryAmount = Math.max(5.2, balance * 0.15);
+
+          if (entryAmount > balance * 0.9) entryAmount = balance * 0.9;
+
+          if (entryAmount < 5.2) {
+              return { status: 'ignored', reason: 'amount_below_min' };
+          }
+
+          const entryQty = await this.calculateQuantity(coin_id, entryAmount, currentPrice);
+
+          logger.info(`[EXECUTOR] Executing partial entry for ${coin_id}: ${entryAmount} USDT (${entryQty} units)`);
           await bybitService.placeOrder(coin_id, activePos.side, 'Market', entryQty);
           break;
 
