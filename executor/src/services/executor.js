@@ -212,8 +212,7 @@ const executorService = {
         // 2. FILTRAR O MELHOR SINAL DE ENTRADA (Modo Sniper)
         if (!this.isProcessingEntry) {
           const entrySignals = signals
-  .filter(s => (s.decision === 'enter' || s.decision === 'ENTRY') && (s.confidence >= 0.68))
-
+            .filter(s => (s.decision === 'enter' || s.decision === 'ENTRY') && (s.confidence >= 0.55))
             .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
           if (entrySignals.length > 0) {
