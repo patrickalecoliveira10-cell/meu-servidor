@@ -11,6 +11,7 @@ class MarketScanner {
     this.isRunning = false;
     this.currentSessionId = null;
     this.scanInterval = null;
+    this.brainInstance = null; // Link direto
     this.stats = {
       coinsScanned: 0,
       snapshotsCreated: 0,
@@ -18,6 +19,11 @@ class MarketScanner {
       startTime: null,
       lastUpdateTime: null
     };
+  }
+
+  setBrain(brain) {
+    this.brainInstance = brain;
+    logger.info('[SCANNER] Brain instance linked for direct processing');
   }
 
   async start() {
@@ -96,12 +102,44 @@ class MarketScanner {
     logger.info('Starting scan cycle...');
 
     try {
-      // Get top coins from Bybit
-      const coins = await bybitService.getTopCoins(config.scanner.coinsCount);
-      logger.info(`Fetched ${coins.length} coins from Bybit`);
+      // 1. Buscar moedas com posições abertas
+      const allPositions = await bybitService.getPosition() || [];
+      const activeSymbols = allPositions
+        .filter(p => parseFloat(p.size || 0) > 0)
+        .map(p => p.symbol);
 
-      // Process each coin for each timeframe
-      for (const coin of coins) {
+      // 2. Buscar as top coins (que já vêm com priceChange24h, etc)
+      let allCoins = await bybitService.getTopCoins(config.scanner.coinsCount);
+
+      // 3. Priorização Inteligente
+      const prioritizedCoins = [];
+      const seen = new Set();
+
+      // Primeiro, colocamos as moedas que você está operando (buscando os dados completos delas na lista da Bybit)
+      for (const symbol of activeSymbols) {
+        const fullData = allCoins.find(c => c.symbol === symbol);
+        if (fullData) {
+          prioritizedCoins.push(fullData);
+          seen.add(symbol);
+        } else {
+          // Se não estiver no top 100, adiciona apenas o símbolo (o processCoin lidará com o resto)
+          prioritizedCoins.push({ symbol, priceChange24h: 0 });
+          seen.add(symbol);
+        }
+      }
+
+      // Depois, adicionamos o resto da lista
+      for (const coin of allCoins) {
+        if (!seen.has(coin.symbol)) {
+          prioritizedCoins.push(coin);
+          seen.add(coin.symbol);
+        }
+      }
+
+      logger.info(`[SCANNER] Iniciando ciclo para ${prioritizedCoins.length} moedas. Prioridade: ${activeSymbols.join(', ') || 'Nenhuma'}`);
+
+      // Processa cada moeda
+      for (const coin of prioritizedCoins) {
         // Register/Update coin in database to ensure FK consistency
         try {
           await queries.upsertCoin(coin);
@@ -207,13 +245,21 @@ class MarketScanner {
 
       // NOTIFICAR IA (MODO UNIFICADO) para processamento imediato
       try {
-        const isUnified = process.env.UNIFIED_MODE === 'true';
-        const port = process.env.PORT || 10000;
-        const aiUrl = isUnified ? `http://localhost:${port}` : (process.env.AI_BRAIN_URL || 'https://trickappserv2.onrender.com');
+        if (this.brainInstance) {
+          // MODO UNIFICADO: Processamento direto em memória (Instantanêo)
+          this.brainInstance.processMarketSnapshot(snapshot).catch(err =>
+            logger.error(`[Scanner -> Brain] Erro no processamento direto: ${err.message}`)
+          );
+        } else {
+          // MODO SEPARADO: Fallback para HTTP
+          const isUnified = process.env.UNIFIED_MODE === 'true';
+          const port = process.env.PORT || 10000;
+          const aiUrl = isUnified ? `http://localhost:${port}` : (process.env.AI_BRAIN_URL || 'https://trickappserv2.onrender.com');
 
-        axios.post(`${aiUrl}/api/snapshot`, snapshot).catch((err) => {
-          logger.error(`[Scanner -> IA] Erro na comunicação interna: ${err.message}`);
-        });
+          axios.post(`${aiUrl}/api/snapshot`, snapshot).catch((err) => {
+            logger.error(`[Scanner -> IA] Erro na comunicação HTTP: ${err.message}`);
+          });
+        }
       } catch (aiErr) {
         logger.error(`Error in notifying AI: ${aiErr.message}`);
       }
