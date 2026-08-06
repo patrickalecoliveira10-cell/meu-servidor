@@ -3,15 +3,21 @@ const logger = require('../logs/logger.js');
 class Intelligence {
   constructor() {
     this.brain = null;
+    this.stats = { total_snapshots: 0 };
   }
 
   async init(brain) {
     this.brain = brain;
+    try {
+        const live = await queries.getLiveStats();
+        this.stats.total_snapshots = parseInt(live.ai_examples || 0);
+    } catch(e) {}
     logger.info('Intelligence module initialized');
   }
 
   async analyze(snapshot, weights, config) {
     try {
+      this.stats.total_snapshots++;
       const { coin_id, timeframe, indicators } = snapshot;
 
       // 1. Get relevant weights
