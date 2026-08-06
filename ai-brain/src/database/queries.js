@@ -239,3 +239,52 @@ const queries = {
   async updateCoinLearning(s) {
     const safeExamples = Math.min(32767, parseInt(s.total_examples) || 0);
     await db.query(
+      'INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, win_rate) VALUES ($1, $2, $3) ON CONFLICT (coin_id) DO UPDATE SET total_examples = EXCLUDED.total_examples',
+      [s.coin_id, safeExamples, Math.round(s.win_rate * 100)]
+    );
+  },
+
+  async updateOperationDynamic(symbol, data) {
+    try {
+      const query = `
+        UPDATE trading_ai.operations
+        SET
+          stop_loss = COALESCE($1, stop_loss),
+          take_profit = COALESCE($2, take_profit),
+          trailing_stop = COALESCE($3, trailing_stop),
+          partial_exit_done = COALESCE($4, partial_exit_done),
+          partial_entry_count = COALESCE($5, partial_entry_count),
+          last_analysis = $6,
+          updated_at = NOW()
+        WHERE symbol = $7 AND status = 'OPEN'
+      `;
+      const sl = data.stop_loss ? BigInt(Math.round(data.stop_loss * 10000000000)) : null;
+      const tp = data.take_profit ? BigInt(Math.round(data.take_profit * 10000000000)) : null;
+      const ts = data.trailing_stop ? Math.round(parseFloat(data.trailing_stop) * 100) : null;
+      await db.query(query, [sl, tp, ts, data.partial_exit_done, data.partial_entry_count, data.reason, symbol]);
+    } catch (e) {
+      console.error('Error updating dynamic operation:', e.message);
+    }
+  },
+
+  async getActiveOperation(symbol) {
+    try {
+      const result = await db.query(
+        "SELECT * FROM trading_ai.operations WHERE symbol = $1 AND status = 'OPEN' LIMIT 1",
+        [symbol]
+      );
+      if (result.rows[0]) {
+        const row = result.rows[0];
+        return {
+          ...row,
+          entry_price: parseFloat(row.entry_price) / 10000000000,
+          stop_loss: row.stop_loss ? parseFloat(row.stop_loss) / 10000000000 : null,
+          take_profit: row.take_profit ? parseFloat(row.take_profit) / 10000000000 : null
+        };
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+};
+
+module.exports = queries;
