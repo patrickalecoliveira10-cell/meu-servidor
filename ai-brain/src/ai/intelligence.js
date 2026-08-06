@@ -87,9 +87,13 @@ class Intelligence {
             if (val < 30) signal = 0.8;
             else if (val > 70) signal = -0.8;
           } else if (name.toLowerCase() === 'macd') {
-            signal = parseFloat(ind.histogram || 0) > 0 ? 0.6 : -0.6;
+            const hist = parseFloat(ind.histogram || 0);
+            if (hist > 0) signal = 0.6;
+            else if (hist < 0) signal = -0.6;
+            else signal = 0; // Neutral
           } else if (name.toLowerCase() === 'adx') {
-            signal = (parseFloat(ind.value || 0) > 25) ? 0.4 : 0;
+            const adxVal = parseFloat(ind.value || 0);
+            signal = (adxVal > 25) ? 0.5 : (adxVal < 15 ? -0.2 : 0);
           } else if (ind.signal !== undefined) {
              // Fallback para sinais numéricos se existirem
              const s = parseFloat(ind.signal);
@@ -177,9 +181,9 @@ class Intelligence {
     }
 
     const confPercent = Math.round(confidence * 100);
-    if (confidence >= 0.85) {
-        reasons.unshift(`[ENTRADA SNIPER] Confiança de ${confPercent}%.`);
-    } else if (confidence >= 0.70) {
+    if (confidence >= 0.70) {
+        reasons.unshift(`[ENTRADA] Confiança de ${confPercent}%.`);
+    } else if (confidence >= 0.60) {
         reasons.push(`Aguardando confirmação (${confPercent}%).`);
     }
 
@@ -189,11 +193,11 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis, config) {
-    // Só entra com 85% de confiança ou mais para garantir qualidade máxima (Modo Sniper)
-    const entryThreshold = 0.85;
+    // Reduzido para 70% conforme solicitado para aumentar frequência de entradas
+    const entryThreshold = 0.70;
 
     if (confidence >= entryThreshold) return 'enter';
-    if (confidence >= 0.70) return 'wait'; // Analisando possível entrada ou pullback
+    if (confidence >= 0.60) return 'wait'; // Analisando possível entrada
     return 'not_enter';
   }
 
