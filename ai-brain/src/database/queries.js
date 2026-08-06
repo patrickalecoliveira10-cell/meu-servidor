@@ -173,7 +173,7 @@ const queries = {
     try {
       const query = `
         SELECT
-          (SELECT COUNT(*) FROM trading_ai.ai_decisions) as total_ai_decisions,
+          (SELECT COUNT(*) FROM trading_ai.ai_decisions WHERE decision = 'enter') as total_ai_decisions,
           (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations) as total_simulated_ops,
           (SELECT total_examples FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as ai_examples
       `;
