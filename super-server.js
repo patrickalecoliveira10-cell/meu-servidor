@@ -27,14 +27,8 @@ function safeRequire(modulePath) {
 }
 
 console.log('--- INICIALIZANDO NÚCLEOS UNIFICADOS ---');
-// Tenta carregar brain.js ou brains.js para compatibilidade entre Local e Render
-let Brain;
-try {
-    Brain = safeRequire('./ai-brain/src/ai/brain.js');
-} catch (e) {
-    logger.warn('brain.js not found, trying brains.js...');
-    Brain = safeRequire('./ai-brain/src/ai/brains.js');
-}
+// Carregamento do Cérebro da IA (Arquivo atualizado com stayReason)
+const Brain = safeRequire('./ai-brain/src/ai/brain.js');
 const executorService = safeRequire('./executor/src/services/executor.js');
 const marketScanner = safeRequire('./scanner/src/scanner/marketScanner.js');
 
@@ -71,6 +65,17 @@ async function start() {
         logger.info('--- SISTEMA UNIFICADO: INICIANDO ---');
         await db.testConnection();
         await Brain.initialize();
+
+        // CONEXÃO DIRETA: O Executor agora "ouve" o Brain sem precisar de HTTP
+        if (executorService.setBrain) {
+            executorService.setBrain(Brain);
+        }
+
+        // CONEXÃO DIRETA: O Scanner agora entrega dados direto para o Brain
+        if (marketScanner.setBrain) {
+            marketScanner.setBrain(Brain);
+        }
+
         await executorService.initialize();
         await executorService.start();
 
