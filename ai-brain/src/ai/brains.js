@@ -1,7 +1,4 @@
 const logger = require('../logs/logger.js');
-const Intelligence = require('./intelligence.js');
-const Learning = require('./learning.js');
-const Simulation = require('./simulation.js');
 const queries = require('../database/queries.js');
 
 class Brain {
@@ -9,16 +6,24 @@ class Brain {
     this.weights = { global: { 'RSI': 1.0, 'MACD': 1.0, 'ADX': 0.8 }, coins: {} };
     this.config = { confidence_threshold: 0.7 };
     this.activeRecommendations = new Map();
+    this.intelligence = null;
+    this.learning = null;
+    this.simulation = null;
   }
 
   async initialize() {
     try {
       logger.info('Initializing AI Brain...');
 
+      // Lazy load to break circular dependencies
+      this.intelligence = require('./intelligence.js');
+      this.learning = require('./learning.js');
+      this.simulation = require('./simulation.js');
+
       // Initialize sub-modules with brain reference
-      await Intelligence.init(this);
-      await Learning.init(this);
-      await Simulation.init(this);
+      await this.intelligence.init(this);
+      await this.learning.init(this);
+      await this.simulation.init(this);
 
       await this.loadWeights();
       logger.info('AI Brain ready');
@@ -46,19 +51,19 @@ class Brain {
   async processMarketSnapshot(snapshot) {
     try {
       const { coin_id } = snapshot;
-      const decision = await Intelligence.analyze(snapshot, this.weights, this.config);
+      const decision = await this.intelligence.analyze(snapshot, this.weights, this.config);
 
       // 1. Aprender com o novo exemplo
-      await Learning.processExample(snapshot, decision);
+      await this.learning.processExample(snapshot, decision);
 
       // 2. Simular para histórico
-      await Simulation.run(snapshot, decision);
+      await this.simulation.run(snapshot, decision);
 
       // Incrementar contador local para atualização imediata no App
-      if (Intelligence.stats) {
-        Intelligence.stats.total_snapshots++;
+      if (this.intelligence.stats) {
+        this.intelligence.stats.total_snapshots++;
         if (decision.decision === 'enter') {
-          Intelligence.stats.total_simulated_ops++;
+          this.intelligence.stats.total_simulated_ops++;
         }
       }
       this.activeRecommendations.set(coin_id, {
@@ -97,9 +102,9 @@ class Brain {
       threshold: this.config.threshold || this.config.confidence_threshold,
       mode: 'CONTINUOUS_LEARNING',
       initialized: true,
-      current_examples_count: Intelligence.stats ? Intelligence.stats.total_snapshots : 0,
-      examples: Intelligence.stats ? Intelligence.stats.total_snapshots : 0,
-      total_simulated_ops: Intelligence.stats ? Intelligence.stats.total_simulated_ops : 0
+      current_examples_count: this.intelligence?.stats ? this.intelligence.stats.total_snapshots : 0,
+      examples: this.intelligence?.stats ? this.intelligence.stats.total_snapshots : 0,
+      total_simulated_ops: this.intelligence?.stats ? this.intelligence.stats.total_simulated_ops : 0
     };
   }
 }
