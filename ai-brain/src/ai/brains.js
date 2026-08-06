@@ -23,12 +23,10 @@ class Brain {
     try {
       logger.info('Initializing AI Brain...');
 
-      // Lazy load to break circular dependencies
       const intelModule = require('./intelligence.js');
       const learningModule = require('./learning.js');
       const simulationModule = require('./simulation.js');
 
-      // Defensive assignment (handles class or potential partially loaded instance)
       const resolveModule = (mod) => {
         if (typeof mod === 'function') return new mod();
         if (mod && mod.init) return mod;
@@ -40,10 +38,9 @@ class Brain {
       this.simulation = resolveModule(simulationModule);
 
       if (!this.intelligence || !this.learning || !this.simulation) {
-          throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence}), Learn(${!!this.learning}), Sim(${!!this.simulation})`);
+        throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence}), Learn(${!!this.learning}), Sim(${!!this.simulation})`);
       }
 
-      // Initialize sub-modules with brain reference
       if (this.intelligence.init) await this.intelligence.init(this);
       if (this.learning.init) await this.learning.init(this);
       if (this.simulation.init) await this.simulation.init(this);
@@ -59,7 +56,6 @@ class Brain {
     try {
       const dbWeights = await queries.getIndicatorWeights();
       if (dbWeights && dbWeights.length > 0) {
-        // Map weights to the internal structure if needed
         dbWeights.forEach(w => {
           this.weights.global[w.indicator_name] = w.weight;
         });
@@ -76,17 +72,13 @@ class Brain {
       const { coin_id } = snapshot;
       const decision = await this.intelligence.analyze(snapshot, this.weights, this.config);
 
-      // 1. Aprender com o novo exemplo
       await this.learning.processExample(snapshot, decision);
-
-      // 2. Simular para histórico
       await this.simulation.run(snapshot, decision);
 
-      // Incrementar contador local para atualização imediata no App
       if (this.intelligence.stats && decision.decision === 'enter') {
         this.intelligence.stats.total_simulated_ops++;
       }
-      // Só sobrescreve se o novo sinal for ENTER, ou se não houver sinal ENTER ativo nos últimos 60s
+
       const existing = this.activeRecommendations.get(coin_id);
       const now = new Date();
       const isExistingEnterFresh = existing &&
@@ -115,7 +107,6 @@ class Brain {
   }
 
   getRecommendations() {
-    // Retenção de 5 minutos para garantir que o App sempre tenha dados
     const now = new Date();
     for (const [id, rec] of this.activeRecommendations.entries()) {
       if (now - rec.timestamp > 300000) {
