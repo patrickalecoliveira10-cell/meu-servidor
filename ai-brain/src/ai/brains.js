@@ -20,19 +20,25 @@ class Brain {
       const learningModule = require('./learning.js');
       const simulationModule = require('./simulation.js');
 
-      // Defensive assignment (handles instance or class with constructor)
-      this.intelligence = intelModule.init ? intelModule : (typeof intelModule === 'function' ? new intelModule() : intelModule);
-      this.learning = learningModule.init ? learningModule : (typeof learningModule === 'function' ? new learningModule() : learningModule);
-      this.simulation = simulationModule.init ? simulationModule : (typeof simulationModule === 'function' ? new simulationModule() : simulationModule);
+      // Defensive assignment (handles class or potential partially loaded instance)
+      const resolveModule = (mod) => {
+        if (typeof mod === 'function') return new mod();
+        if (mod && mod.init) return mod;
+        return null;
+      };
 
-      if (!this.intelligence.init || !this.learning.init || !this.simulation.init) {
-          throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence.init}), Learn(${!!this.learning.init}), Sim(${!!this.simulation.init})`);
+      this.intelligence = resolveModule(intelModule);
+      this.learning = resolveModule(learningModule);
+      this.simulation = resolveModule(simulationModule);
+
+      if (!this.intelligence || !this.learning || !this.simulation) {
+          throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence}), Learn(${!!this.learning}), Sim(${!!this.simulation})`);
       }
 
       // Initialize sub-modules with brain reference
-      await this.intelligence.init(this);
-      await this.learning.init(this);
-      await this.simulation.init(this);
+      if (this.intelligence.init) await this.intelligence.init(this);
+      if (this.learning.init) await this.learning.init(this);
+      if (this.simulation.init) await this.simulation.init(this);
 
       await this.loadWeights();
       logger.info('AI Brain ready');
