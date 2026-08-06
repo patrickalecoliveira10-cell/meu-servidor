@@ -77,7 +77,8 @@ class Database {
           "ALTER TABLE trading_ai.scanner_snapshots ALTER COLUMN low TYPE BIGINT",
           "ALTER TABLE trading_ai.scanner_snapshots ALTER COLUMN close TYPE BIGINT",
 
-          // Fix SMALLINT limits for learning counters
+          // Fix SMALLINT limits for learning counters - handle existing overflow data first
+          "UPDATE trading_ai.ai_coin_learning SET total_examples = 32767 WHERE total_examples > 32767",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN total_examples TYPE INTEGER",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN total_decisions TYPE INTEGER",
           "ALTER TABLE trading_ai.ai_global_learning ALTER COLUMN correct_decisions TYPE INTEGER",
