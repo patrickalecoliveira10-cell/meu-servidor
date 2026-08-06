@@ -47,21 +47,36 @@ router.get('/positions', async (req, res) => {
     // Filtrar apenas posições reais (tamanho > 0)
     const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
 
-    const mappedOperations = activePositions.map(p => ({
-      id: p.symbol, // ID ESTÁVEL: Apenas o símbolo
-      symbol: p.symbol,
-      side: p.side,
-      entryPrice: parseFloat(p.avgPrice || 0),
-      currentPrice: parseFloat(p.markPrice || 0),
-      currentStop: parseFloat(p.stopLoss || 0),
-      currentTrailing: parseFloat(p.trailingStop || 0), // Pegando o trailing atual
-      currentProfit: parseFloat(p.unrealisedPnl || 0),
-      roi: p.positionValue > 0 ? (parseFloat(p.unrealisedPnl) / parseFloat(p.positionValue)) * 100 : 0,
-      entryReason: "AI Signal Strength: " + (p.leverage || "1x"),
-      stayReason: executorService.lastReasons[p.symbol] || "IA monitorando tendências de mercado...", // Texto humano
-      isOpen: true,
-      timestamp: parseInt(p.createdTime || Date.now())
-    }));
+    const mappedOperations = activePositions.map(p => {
+      const markPrice = parseFloat(p.markPrice || 0);
+      const trailingDistance = parseFloat(p.trailingStop || 0);
+      const side = p.side;
+
+      // Se tiver trailing stop nativo, estimamos o preço da linha no gráfico
+      // Nota: No Bybit V5, trailingStop é a distância.
+      let estimatedTrailingPrice = 0;
+      if (trailingDistance > 0) {
+        estimatedTrailingPrice = (side === 'Buy' || side === 'buy')
+          ? markPrice - trailingDistance
+          : markPrice + trailingDistance;
+      }
+
+      return {
+        id: p.symbol, // ID ESTÁVEL: Apenas o símbolo
+        symbol: p.symbol,
+        side: p.side,
+        entryPrice: parseFloat(p.avgPrice || 0),
+        currentPrice: markPrice,
+        currentStop: parseFloat(p.stopLoss || 0),
+        currentTrailing: estimatedTrailingPrice,
+        currentProfit: parseFloat(p.unrealisedPnl || 0),
+        roi: p.positionValue > 0 ? (parseFloat(p.unrealisedPnl) / parseFloat(p.positionValue)) * 100 : 0,
+        entryReason: "AI Signal Strength: " + (p.leverage || "1x"),
+        stayReason: executorService.lastReasons[p.symbol] || "IA monitorando tendências de mercado...", // Texto humano
+        isOpen: true,
+        timestamp: parseInt(p.createdTime || Date.now())
+      };
+    });
 
     sendResponse(res, true, {
       openOperations: mappedOperations,
