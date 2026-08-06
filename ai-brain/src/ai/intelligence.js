@@ -295,7 +295,6 @@ class Intelligence {
   determineDecision(confidence, analysis) {
     // Exige: confiança >= 55% + side=buy
     // Removida exigência de hasConfirmation para permitir mais operações
-    logger.info(`[DEBUG] determineDecision: confidence=${confidence}, side=${analysis.side}, hasConfirmation=${analysis.hasConfirmation}`);
     if (confidence >= 0.55 && analysis.side === 'buy') return 'enter';
     if (confidence >= 0.45) return 'wait';
     return 'not_enter';
