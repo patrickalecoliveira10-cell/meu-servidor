@@ -93,8 +93,12 @@ const executorService = {
       logger.info(`[EXECUTOR] Timer disparado - executando ciclo. isPaused: ${this.isPaused}, emergencyMode: ${this.emergencyMode}`);
       if (!this.isPaused && !this.emergencyMode) {
         this.monitorAndExecute();
+      } else {
+        logger.warn(`[EXECUTOR] Ciclo ignorado: isPaused=${this.isPaused}, emergencyMode=${this.emergencyMode}`);
       }
     }, interval);
+
+    logger.info(`[EXECUTOR] Timer configurado com ID: ${this.monitoringInterval}`);
   },
 
   async monitorAndExecute() {
