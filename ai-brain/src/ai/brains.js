@@ -81,7 +81,8 @@ class Brain {
       threshold: this.config.threshold || this.config.confidence_threshold,
       mode: 'CONTINUOUS_LEARNING',
       initialized: true,
-      examples: 0 // Simplificado para o App
+      // Removido o hardcode de 0 para permitir que o Controller use o dado do DB
+      examples: this.activeRecommendations.size > 0 ? 'ACTIVE' : 'READY'
     };
   }
 }
