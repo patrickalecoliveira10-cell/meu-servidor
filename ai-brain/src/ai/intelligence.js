@@ -25,6 +25,7 @@ class Intelligence {
 
   async analyze(snapshot, weights, config) {
     try {
+      this.stats.total_snapshots++;
       const { coin_id, timeframe, indicators } = snapshot;
 
       // 1. Get relevant weights
@@ -115,15 +116,14 @@ class Intelligence {
     const normalizedScore = totalWeight > 0 ? score / totalWeight : 0;
     const winProbability = Math.max(0.1, Math.min(0.9, (normalizedScore + 1) / 2));
 
-    // Ajuste fino para o Sniper: Se o RSI for extremo, garante que a probabilidade não seja enterrada por outros indicadores
+    // Ajuste fino: RSI extremo sobrevendido garante sinal de compra forte
     const rsiObj = indicators.rsi || indicators.RSI;
     if (rsiObj && typeof rsiObj === 'object') {
         const rv = parseFloat(rsiObj.value);
-        if (rv < 35) return { winProbability: Math.max(winProbability, 0.75), lossProbability: 0.25, riskRatio: 2.0 };
-        if (rv > 65) return { winProbability: Math.min(winProbability, 0.25), lossProbability: 0.75, riskRatio: 2.0 };
+        if (rv < 35) return { winProbability: Math.max(winProbability, 0.75), lossProbability: 0.25, riskRatio: 2.0, side: 'buy' };
     }
 
-    return { winProbability, lossProbability: 1 - winProbability, riskRatio: 2.0 };
+    return { winProbability, lossProbability: 1 - winProbability, riskRatio: 2.0, side: winProbability > 0.5 ? 'buy' : null };
   }
 
   evaluateSetup(indicators) {
@@ -169,9 +169,9 @@ class Intelligence {
 
     if (rsi) {
       const val = parseFloat(rsi.value || rsi);
-      if (val > 65) reasons.push(`RSI em ${val.toFixed(0)} (Sobrecomprado).`);
-      else if (val < 35) reasons.push(`RSI em ${val.toFixed(0)} (Sobrevendido).`);
-      else reasons.push(`RSI estável (${val.toFixed(0)}).`);
+      if (val > 65) reasons.push(`RSI em ${val.toFixed(0)} (Sobrecomprado/Topo).`);
+      else if (val < 35) reasons.push(`RSI em ${val.toFixed(0)} (Sobrevendido/Fundo).`);
+      else reasons.push(`RSI em zona neutra (${val.toFixed(0)}).`);
     }
 
     if (adx) {
