@@ -261,8 +261,10 @@ const queries = {
   },
 
   async updateCoinLearning(s) {
+    // total_examples capped at 32767 (smallint max) to avoid DB overflow
+    const safeExamples = Math.min(32767, parseInt(s.total_examples) || 0);
     await db.query('INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, win_rate) VALUES ($1, $2, $3) ON CONFLICT (coin_id) DO UPDATE SET total_examples = EXCLUDED.total_examples',
-    [s.coin_id, s.total_examples, Math.round(s.win_rate*100)]);
+    [s.coin_id, safeExamples, Math.round(s.win_rate*100)]);
   },
 
   // GESTÃO DINÂMICA DE OPERAÇÕES REAIS
