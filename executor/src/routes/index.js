@@ -1,156 +1,112 @@
+require('dotenv').config();
+process.env.UNIFIED_MODE = 'true';
 const express = require('express');
-const router = express.Router();
-const executorService = require('../services/executor');
-const logger = require('../logs/logger.js');
+const helmet = require('helmet');
+const cors = require('cors');
+const compression = require('compression');
+const path = require('path');
+const fs = require('fs');
 
-// Função auxiliar para garantir que o Android receba exatamente o que espera
-const sendResponse = (res, success, data = null, message = null, statusCode = 200) => {
-  res.status(statusCode).json({
-    success: success,
-    data: data,
-    message: message || (success ? 'Operation successful' : 'Operation failed'),
-    timestamp: Date.now() // OBRIGATÓRIO
-  });
-};
+// Configurações de logs e DB
+const logger = require('./ai-brain/src/logs/logger');
+const db = require('./ai-brain/src/database/connection');
 
-// GET /status - Mapeado para ServerInfo.kt
-router.get('/status', (req, res) => {
-  try {
-    const status = executorService.getStatus();
-    const mem = process.memoryUsage();
+// Função de carregamento seguro para evitar MODULE_NOT_FOUND no Render
+function safeRequire(modulePath) {
+    let fullPath = path.resolve(__dirname, modulePath);
 
-    sendResponse(res, true, {
-      type: "EXECUTOR",
-      status: status.isRunning ? "ONLINE" : "OFFLINE",
-      uptime: status.uptime,
-      cpuUsage: 0.0,
-      memoryUsage: Math.round(mem.heapUsed / 1024 / 1024 * 100) / 100,
-      latency: 0,
-      lastSync: Date.now(),
-      version: "1.0.0",
-      errorCount: 0,
-      url: "https://trickapps2.onrender.com"
-    });
-  } catch (error) {
-    logger.error('Error getting status:', error);
-    sendResponse(res, false, null, error.message, 500);
-  }
-});
-
-// GET /positions - Mapeado para ExecutorData.kt e Operation.kt
-router.get('/positions', async (req, res) => {
-  try {
-    const bybitService = require('../services/bybit');
-    const allPositions = await bybitService.getPosition() || [];
-    
-    // Filtrar apenas posições reais (tamanho > 0)
-    const activePositions = allPositions.filter(p => parseFloat(p.size || 0) > 0);
-
-    const mappedOperations = activePositions.map(p => ({
-      id: p.symbol, // ID ESTÁVEL: Apenas o símbolo
-      symbol: p.symbol,
-      side: p.side,
-      entryPrice: parseFloat(p.avgPrice || 0),
-      currentPrice: parseFloat(p.markPrice || 0),
-      currentStop: parseFloat(p.stopLoss || 0),
-      currentTrailing: parseFloat(p.trailingStop || 0), // Pegando o trailing atual
-      currentProfit: parseFloat(p.unrealisedPnl || 0),
-      roi: p.positionValue > 0 ? (parseFloat(p.unrealisedPnl) / parseFloat(p.positionValue)) * 100 : 0,
-      entryReason: "AI Signal Strength: " + (p.leverage || "1x"),
-      stayReason: executorService.lastReasons[p.symbol] || "IA monitorando tendências de mercado...", // Texto humano
-      isOpen: true,
-      timestamp: parseInt(p.createdTime || Date.now())
-    }));
-
-    sendResponse(res, true, {
-      openOperations: mappedOperations,
-      paused: executorService.isPaused || false,
-      mode: "AUTO"
-    });
-  } catch (error) {
-    logger.error('Error getting positions:', error);
-    sendResponse(res, false, { openOperations: [], paused: false, mode: "AUTO" }, error.message, 500);
-  }
-});
-
-// POST /control - Controle de Start/Stop
-router.post('/control', (req, res) => {
-  try {
-    const { action } = req.body;
-    if (action === 'START') executorService.isPaused = false;
-    if (action === 'STOP') executorService.isPaused = true;
-    
-    sendResponse(res, true, null, `Executor ${action} successful`);
-  } catch (error) {
-    sendResponse(res, false, null, error.message, 500);
-  }
-});
-
-// NOVO: Receber recomendações do AI Brain
-router.post('/recommendations', async (req, res) => {
-  try {
-    const decision = req.body;
-    logger.info(`Recommendation received for ${decision.coin_id}: ${decision.decision}`);
-
-    // Encaminha para o serviço de execução
-    const result = await executorService.processRecommendation(decision);
-
-    sendResponse(res, true, result, "Recommendation processed");
-  } catch (error) {
-    logger.error('Error processing recommendation:', error);
-    sendResponse(res, false, null, error.message, 500);
-  }
-});
-
-// POST /manage - Receber sinais de gerenciamento (AI)
-router.post('/manage', async (req, res) => {
-  try {
-    const signal = req.body;
-    const result = await executorService.updatePositionManagement(signal);
-    sendResponse(res, true, result, "Management signal processed");
-  } catch (error) {
-    logger.error('Error processing management signal:', error);
-    sendResponse(res, false, null, error.message, 500);
-  }
-});
-
-// NOVO: Ação genérica do App Android (Mapeia para fechar)
-router.post('/action', async (req, res) => {
-  try {
-    const { action, symbol } = req.body;
-    logger.info(`[ANDROID_ACTION] ${action} solicitado para ${symbol}`);
-
-    if (action === 'CLOSE') {
-      const result = await executorService.updatePositionManagement({
-        coin_id: symbol,
-        decision: 'close'
-      });
-      return sendResponse(res, true, result, `Position ${symbol} closed`);
+    // Tenta o caminho original
+    if (fs.existsSync(fullPath) || fs.existsSync(fullPath + '.js')) {
+        return require(fullPath);
     }
 
-    sendResponse(res, true, null, "Action received");
-  } catch (error) {
-    logger.error('Error in android action:', error);
-    sendResponse(res, false, null, error.message, 500);
-  }
-});
-
-// NOVO: Botão de Emergência do App
-router.post('/emergency', async (req, res) => {
-  try {
-    logger.warn('[EMERGENCY] Modo de emergência acionado!');
-    // Fecha tudo
-    const bybit = require('../services/bybit');
-    const positions = await bybit.getPosition();
-    for (const p of positions) {
-       if (parseFloat(p.size) > 0) {
-         await executorService.updatePositionManagement({ coin_id: p.symbol, decision: 'close' });
-       }
+    // Se falhar e for o brain, tenta brains
+    if (modulePath.includes('brain.js')) {
+        const altPath = fullPath.replace('brain.js', 'brains.js');
+        if (fs.existsSync(altPath)) {
+            console.log(`[INFO] Falling back from brain.js to brains.js at: ${altPath}`);
+            return require(altPath);
+        }
     }
-    sendResponse(res, true, null, "All positions closed (Emergency)");
-  } catch (error) {
-    sendResponse(res, false, null, error.message, 500);
-  }
-});
 
-module.exports = router;
+    // Tenta ver se está um nível acima (caso de subpastas)
+    console.error(`[CRITICAL] Module not found at: ${fullPath}`);
+    const dir = path.dirname(fullPath);
+    if (fs.existsSync(dir)) {
+        console.log(`Directory listing for ${dir}:`, fs.readdirSync(dir));
+    }
+    throw new Error(`Cannot find module: ${fullPath}`);
+}
+
+console.log('--- INICIALIZANDO NÚCLEOS UNIFICADOS ---');
+// Carregamento do Cérebro da IA (Arquivo atualizado com stayReason)
+const Brain = safeRequire('./ai-brain/src/ai/brains.js');
+const executorService = safeRequire('./executor/src/services/executor.js');
+const marketScanner = safeRequire('./scanner/src/scanner/marketScanner.js');
+
+const app = express();
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors());
+app.use(compression());
+app.use(express.json());
+
+// Importação das Rotas
+const brainRoutes = require('./ai-brain/src/routes/index');
+const executorRoutes = require('./executor/src/routes/index');
+const scannerRoutes = require('./scanner/src/routes/scanner');
+const scannerController = require('./scanner/src/controllers/scannerController');
+
+// Endpoints de compatibilidade Android
+app.get('/api/status', (req, res) => scannerController.getStatus(req, res));
+app.get('/api/results', (req, res) => scannerController.getResults(req, res));
+
+app.use('/api', brainRoutes);
+app.use('/api/executor', executorRoutes);
+app.use('/api/scanner', scannerRoutes);
+
+app.get('/', (req, res) => res.json({
+    service: 'Unified Trading System V2',
+    status: 'Operational',
+    brain: Brain.getStatus().mode,
+    scanner: marketScanner.getStatus().isRunning ? 'active' : 'idle',
+    executor: executorService.getStatus().isRunning ? 'active' : 'idle'
+}));
+
+async function start() {
+    try {
+        logger.info('--- SISTEMA UNIFICADO: INICIANDO ---');
+        await db.testConnection();
+        await Brain.initialize();
+
+        // EXPORTE GLOBAL PARA OS CONTROLLERS ACESSAREM A INSTÂNCIA VIVA
+        global.liveBrainInstance = Brain;
+        global.liveExecutorService = executorService;
+
+        // CONEXÃO DIRETA: O Executor agora "ouve" o Brain sem precisar de HTTP
+        if (executorService.setBrain) {
+            executorService.setBrain(Brain);
+        }
+
+        // CONEXÃO DIRETA: O Scanner agora entrega dados direto para o Brain
+        if (marketScanner.setBrain) {
+            marketScanner.setBrain(Brain);
+        }
+
+        await executorService.initialize();
+        await executorService.start();
+
+        setTimeout(() => {
+          marketScanner.start().catch(err => logger.error('Scanner start error:', err));
+        }, 5000);
+
+        const PORT = process.env.PORT || 10000;
+        app.listen(PORT, () => {
+            logger.info(`SISTEMA UNIFICADO rodando na porta ${PORT}`);
+        });
+    } catch (err) {
+        console.error('ERRO CRÍTICO NO STARTUP:', err);
+        process.exit(1);
+    }
+}
+
+start();
