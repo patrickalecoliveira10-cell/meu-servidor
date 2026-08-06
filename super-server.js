@@ -28,7 +28,7 @@ function safeRequire(modulePath) {
 
 console.log('--- INICIALIZANDO NÚCLEOS UNIFICADOS ---');
 // Carregamento do Cérebro da IA (Arquivo atualizado com stayReason)
-const Brain = safeRequire('./ai-brain/src/ai/brain.js');
+const Brain = safeRequire('./ai-brain/src/ai/brains.js');
 const executorService = safeRequire('./executor/src/services/executor.js');
 const marketScanner = safeRequire('./scanner/src/scanner/marketScanner.js');
 
