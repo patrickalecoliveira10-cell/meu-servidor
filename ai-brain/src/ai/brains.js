@@ -14,7 +14,12 @@ class Brain {
   async initialize() {
     try {
       logger.info('Initializing AI Brain...');
+
+      // Initialize sub-modules with brain reference
       await Intelligence.init(this);
+      await Learning.init(this);
+      await Simulation.init(this);
+
       await this.loadWeights();
       logger.info('AI Brain ready');
     } catch (error) {
@@ -24,9 +29,14 @@ class Brain {
 
   async loadWeights() {
     try {
-      const dbWeights = await queries.getWeights();
-      if (dbWeights) this.weights = dbWeights;
-      const dbConfig = await queries.getConfig();
+      const dbWeights = await queries.getIndicatorWeights();
+      if (dbWeights && dbWeights.length > 0) {
+        // Map weights to the internal structure if needed
+        dbWeights.forEach(w => {
+          this.weights.global[w.indicator_name] = w.weight;
+        });
+      }
+      const dbConfig = await queries.getConfiguration();
       if (dbConfig) this.config = dbConfig;
     } catch (error) {
       logger.warn('Could not load weights from DB, using defaults');
