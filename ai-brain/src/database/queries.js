@@ -173,7 +173,7 @@ const queries = {
     try {
       const query = `
         SELECT
-          (SELECT COUNT(*) FROM trading_ai.ai_decisions WHERE decision = 'enter') as total_ai_decisions,
+          (SELECT COUNT(*) FROM trading_ai.operations) as total_real_ops,
           (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations) as total_simulated_ops,
           (SELECT total_examples FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as ai_examples
       `;
@@ -181,12 +181,12 @@ const queries = {
       const row = result.rows[0];
       return {
         ai_examples: parseInt(row?.ai_examples || 0),
-        total_ai_decisions: parseInt(row?.total_ai_decisions || 0),
+        total_real_ops: parseInt(row?.total_real_ops || 0),
         total_simulated_ops: parseInt(row?.total_simulated_ops || 0)
       };
     } catch (e) {
       console.error('LiveStatsError:', e.message);
-      return { ai_examples: 0, total_ai_decisions: 0, total_simulated_ops: 0 };
+      return { ai_examples: 0, total_real_ops: 0, total_simulated_ops: 0 };
     }
   },
 
