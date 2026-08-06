@@ -104,9 +104,6 @@ class Brain {
           stayReason: decision.stayReason,
           timestamp: now
         });
-        logger.info(`[BRAIN-DEBUG] Armazenado: ${coin_id}, decision=${decision.decision.toUpperCase()}, side=${decision.side}, confidence=${decision.confidence}`);
-      } else {
-        logger.info(`[BRAIN-DEBUG] Não armazenado (sinal ENTER recente): ${coin_id}`);
       }
 
       logger.info(`[BRAIN] Analysis for ${coin_id}: ${decision.stayReason} Confidence: ${Math.round(decision.confidence * 100)}%`);
