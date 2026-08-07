@@ -228,18 +228,86 @@ class Database {
   async query(text, params) {
     const start = Date.now();
     try {
+      // Se detectamos que o banco está em read-only, evitamos comandos de modificação
+      const isWriteQuery = /INSERT|UPDATE|DELETE|CREATE|ALTER|DROP/i.test(text);
+      if (global.dbReadOnly && isWriteQuery) {
+        return { rows: [], rowCount: 0 };
+      }
+
       const result = await this.pool.query(text, params);
       const duration = Date.now() - start;
       logger.debug('Executed query', { text, duration, rows: result.rowCount });
       return result;
     } catch (error) {
-      logger.error('Query error', { text, error: error.message });
-      throw error;
+      if (error.message.includes('read-only')) {
+        if (!global.dbReadOnly) {
+          logger.warn('!!! DATABASE ENTERED READ-ONLY MODE - WRITES DISABLED !!!');
+          global.dbReadOnly = true;
+        }
+        return { rows: [], rowCount: 0 };
+      } else {
+        logger.error('Query error', { text, error: error.message });
+        throw error;
+      }
     }
   }
 
   async getClient() {
     return await this.pool.connect();
+  }
+
+  // Sistema de limpeza automática para manter o banco abaixo de 512MB
+  async autoCleanup() {
+    try {
+      logger.info('Iniciando limpeza automática do banco de dados (Limite 512MB)...');
+
+      // 1. LIMPEZA DE LOGS (Ocupam muito espaço e são pouco úteis para a IA)
+      await this.pool.query("DELETE FROM trading_ai.logs WHERE timestamp < NOW() - INTERVAL '3 days'");
+      await this.pool.query("DELETE FROM trading_ai.ai_learning_logs WHERE timestamp < NOW() - INTERVAL '7 days'");
+      logger.info('Logs antigos removidos.');
+
+      // 2. SNAPSHOTS DO SCANNER (Dados brutos, manter apenas o necessário para análise recente)
+      await this.pool.query("DELETE FROM trading_ai.scanner_snapshots WHERE timestamp < NOW() - INTERVAL '1 day'");
+      logger.info('Snapshots brutos antigos removidos.');
+
+      // 3. DECISÕES DA IA (Manter histórico importante, mas limpar o excesso)
+      // Mantemos decisões de 'enter' por mais tempo, 'observe' limpamos rápido
+      await this.pool.query("DELETE FROM trading_ai.ai_decisions WHERE decision = 'observe' AND timestamp < NOW() - INTERVAL '2 days'");
+      await this.pool.query("DELETE FROM trading_ai.ai_decisions WHERE timestamp < NOW() - INTERVAL '15 days'");
+      logger.info('Decisões de IA otimizadas.');
+
+      // 4. OPERAÇÕES SIMULADAS (Manter apenas os últimos 30 dias de performance)
+      await this.pool.query("DELETE FROM trading_ai.ai_simulated_operations WHERE timestamp < NOW() - INTERVAL '30 days'");
+
+      // 5. VACUUM (Essencial para o Postgres liberar o espaço em disco de fato)
+      // Nota: VACUUM FULL trava as tabelas, usamos apenas VACUUM ANALYZE por segurança em produção
+      await this.pool.query('VACUUM ANALYZE');
+
+      global.dbReadOnly = false; // Tenta destravar o modo read-only após a limpeza
+      logger.info('Limpeza concluída com sucesso.');
+      return true;
+    } catch (error) {
+      logger.error('Erro na limpeza automática:', error.message);
+      return false;
+    }
+  }
+
+  async checkSizeAndCleanup() {
+    try {
+      const result = await this.pool.query(`
+        SELECT pg_database_size(current_database()) as size_bytes
+      `);
+      const sizeMB = result.rows[0].size_bytes / (1024 * 1024);
+      logger.info(`Tamanho atual do banco: ${sizeMB.toFixed(2)} MB`);
+
+      // Se passar de 400MB (segurança para o limite de 512MB), limpa.
+      if (sizeMB > 400 || global.dbReadOnly) {
+        logger.warn(`Banco atingindo limite (${sizeMB.toFixed(2)}MB). Executando autoCleanup...`);
+        await this.autoCleanup();
+      }
+    } catch (e) {
+      logger.error('Erro ao verificar tamanho do banco:', e.message);
+    }
   }
 
   async close() {
