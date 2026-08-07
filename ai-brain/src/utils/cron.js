@@ -1,48 +1,47 @@
-const db = require('./connection');
+const cron = require('node-cron');
+const db = require('../database/connection'); // Caminho corrigido para o Render
 const logger = require('../logs/logger');
 
-const cronTasks = {
-    async runDailyCleanup() {
+const initCron = () => {
+    // 1. Manutenção de Espaço (A cada 30 minutos - Previne estouro de 512MB)
+    cron.schedule('*/30 * * * *', async () => {
         try {
-            logger.info('[CRON] Iniciando limpeza diária para otimização de 512MB...');
-
-            // 1. Remove logs com mais de 3 dias
+            logger.info('[CRON] Higienizando Supabase para manter Sniper 24h...');
+            
+            // Remove logs com mais de 3 dias
             await db.query("DELETE FROM trading_ai.logs WHERE timestamp < NOW() - INTERVAL '3 days'");
-
-            // 2. Remove snapshots de aprendizado com confiança baixa (conhecimento inútil)
-            await db.query("DELETE FROM trading_ai.ai_simulated_operations WHERE confidence_at_entry < 40 AND result = 'loss'");
-
-            // 3. Mantém apenas as últimas 500 operações simuladas por moeda para economizar espaço
+            
+            // Remove simulações de Loss com baixa confiança
+            await db.query("DELETE FROM trading_ai.ai_simulated_operations WHERE confidence_at_entry < 50 AND result = 'loss'");
+            
+            // Mantém apenas o top 3000 registros para evitar o limite do Supabase
             await db.query(`
-                DELETE FROM trading_ai.ai_simulated_operations
+                DELETE FROM trading_ai.ai_simulated_operations 
                 WHERE id NOT IN (
-                    SELECT id FROM trading_ai.ai_simulated_operations
-                    ORDER BY timestamp DESC LIMIT 5000
+                    SELECT id FROM trading_ai.ai_simulated_operations 
+                    ORDER BY timestamp DESC LIMIT 3000
                 )
             `);
-
-            // 4. Executa VACUUM para recuperar espaço em disco fisicamente
+            
+            // Libera o espaço em disco de fato
             await db.query('VACUUM ANALYZE');
-
-            logger.info('[CRON] Limpeza concluída com sucesso.');
-        } catch (e) {
-            logger.error('[CRON] Falha na limpeza:', e.message);
+            
+            logger.info('[CRON] Banco de dados otimizado.');
+        } catch (error) {
+            logger.error('[CRON] Erro na manutenção:', error.message);
         }
-    },
+    });
 
-    // Função de Heartbeat para manter o servidor acordado no Render
-    async keepAlive() {
+    // 2. Heartbeat Keep-Alive (A cada 5 minutos - Mantém o Render acordado)
+    cron.schedule('*/5 * * * *', async () => {
         try {
             await db.query('SELECT 1');
-            // logger.debug('[HEARTBEAT] Conexão ativa.');
-        } catch (e) {}
-    }
+        } catch (e) {
+            logger.error('[HEARTBEAT] Falha ao manter servidor ativo:', e.message);
+        }
+    });
+
+    logger.info('>>> Monitoramento Sniper 24h e Auto-Cleanup Ativado.');
 };
 
-// Agendar tarefas se não estiver em ambiente de teste
-if (process.env.NODE_ENV !== 'test') {
-    setInterval(() => cronTasks.runDailyCleanup(), 24 * 60 * 60 * 1000); // 24h
-    setInterval(() => cronTasks.keepAlive(), 5 * 60 * 1000); // 5 min
-}
-
-module.exports = cronTasks;
+module.exports = { initCron };
