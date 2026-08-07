@@ -165,6 +165,9 @@ class Learning {
 
       // Itera sobre os indicadores usados na decisão para ajustar pesos
       for (const [name, data] of Object.entries(indicators)) {
+        // Proteção contra dados nulos ou malformados
+        if (!data || typeof data !== 'object') continue;
+
         const signal = data.signal || 0;
         if (signal !== 0) {
           // Determina se o sinal foi na mesma direção do sucesso
