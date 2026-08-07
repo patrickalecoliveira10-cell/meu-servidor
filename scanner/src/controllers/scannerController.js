@@ -87,7 +87,8 @@ class ScannerController {
         const indicatorList = indicatorsData.indicators ? Object.keys(indicatorsData.indicators) : [];
 
         return {
-          symbol: r.symbol || 'UNKNOWN',
+          symbol: r.coin_symbol || r.coin_id || 'UNKNOWN',
+          name: r.coin_name || '',
           probability: parseFloat(r.score || 0) / 100,
           confidence: parseFloat(r.score || 0) / 100,
           indicators: indicatorList,
