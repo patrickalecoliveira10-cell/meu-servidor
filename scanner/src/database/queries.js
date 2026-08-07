@@ -123,12 +123,17 @@ const queries = {
 
   async insertLog(log) {
     try {
+      // Se o banco estiver em modo read-only, evitamos o spam de erro
+      if (global.dbReadOnly) return null;
+
       const query = `INSERT INTO trading_ai.logs (level, message, context, source) VALUES ($1, $2, $3, $4) RETURNING id;`;
       const result = await db.query(query, [log.level, log.message, JSON.stringify(log.context), log.source]);
       return result.rows[0]?.id;
     } catch (e) {
-      // Silencioso no DB, loga no console
-      console.log(`[DB Log Fallback] ${log.level}: ${log.message}`);
+      if (e.message.includes('read-only')) {
+        global.dbReadOnly = true;
+        console.warn('!!! DATABASE IS READ-ONLY - Check storage limits !!!');
+      }
       return null;
     }
   },
