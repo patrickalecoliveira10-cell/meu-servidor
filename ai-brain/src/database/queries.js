@@ -95,6 +95,7 @@ const queries = {
 
   // Decisions
   async insertDecision(decision) {
+    if (global.dbReadOnly) return { id: 'skipped' };
     const query = `
       INSERT INTO trading_ai.ai_decisions (
         coin_id, timeframe, decision, side, price,
@@ -125,6 +126,7 @@ const queries = {
   },
 
   async insertPattern(pattern) {
+    if (global.dbReadOnly) return;
     try {
       const query = `
         INSERT INTO trading_ai.ai_patterns (
@@ -144,6 +146,7 @@ const queries = {
   },
 
   async insertLearningLog(log) {
+    if (global.dbReadOnly) return;
     try {
       const query = `
         INSERT INTO trading_ai.ai_learning_logs (log_type, coin_id, message, data, timestamp)
@@ -155,6 +158,7 @@ const queries = {
 
   // Simulations
   async insertSimulatedOperation(sim) {
+    if (global.dbReadOnly) return;
     const query = `
       INSERT INTO trading_ai.ai_simulated_operations (
         coin_id, timeframe, side, entry_price, stop_loss, take_profit,
