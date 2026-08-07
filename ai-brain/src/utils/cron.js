@@ -26,6 +26,10 @@ const initCron = () => {
 
   // Atualizar estatísticas diárias todos os dias às 23:55
   cron.schedule('55 23 * * *', async () => {
+    if (global.dbReadOnly) {
+      logger.warn('[CRON] Banco em modo Read-Only. Pulando atualização de estatísticas.');
+      return;
+    }
     try {
       logger.info('Running daily statistics update...');
       const today = new Date().toISOString().split('T')[0];
