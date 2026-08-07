@@ -1,4 +1,4 @@
--- AI Brain V1.2.2 - Master Reset (Otimizado para Aprendizado Sniper e Supabase 512MB)
+-- AI Brain V1.2.2 - Master Reset Final (Sniper Mode & Database Optimization)
 CREATE SCHEMA IF NOT EXISTS trading_ai;
 SET search_path TO trading_ai, public;
 
@@ -15,35 +15,12 @@ CREATE TABLE IF NOT EXISTS trading_ai.logs (
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 2. Moedas
-CREATE TABLE IF NOT EXISTS trading_ai.coins (
-  id VARCHAR(20) PRIMARY KEY,
-  symbol VARCHAR(20) UNIQUE NOT NULL,
-  name VARCHAR(100),
-  exchange VARCHAR(20) DEFAULT 'bybit',
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 3. Pesos dos Indicadores (O "Cérebro" da IA)
-CREATE TABLE IF NOT EXISTS trading_ai.ai_indicator_weights (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  indicator_name VARCHAR(50) NOT NULL,
-  coin_id VARCHAR(20) DEFAULT 'GLOBAL',
-  timeframe VARCHAR(10) DEFAULT 'ALL',
-  weight SMALLINT DEFAULT 50,
-  performance_score SMALLINT DEFAULT 50,
-  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(indicator_name, coin_id, timeframe)
-);
-
--- 4. Operações (Preços escalados por 10^10 em BIGINT)
+-- 2. Operações Reais (Suporta Stop, Trailing e Parciais)
 CREATE TABLE IF NOT EXISTS trading_ai.operations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     symbol VARCHAR(20) NOT NULL,
     side VARCHAR(10) NOT NULL,
-    entry_price BIGINT NOT NULL,
+    entry_price BIGINT NOT NULL, -- Preço * 10^10
     exit_price BIGINT,
     stop_loss BIGINT,
     take_profit BIGINT,
@@ -58,24 +35,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.operations (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS trading_ai.ai_simulated_operations (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  coin_id VARCHAR(20) NOT NULL,
-  timeframe VARCHAR(5) NOT NULL,
-  side VARCHAR(10),
-  entry_price BIGINT,
-  exit_price BIGINT,
-  stop_loss BIGINT,
-  take_profit BIGINT,
-  result VARCHAR(10),
-  profit_loss SMALLINT,
-  confidence_at_entry SMALLINT,
-  duration_seconds INTEGER,
-  decision_data JSONB,
-  timestamp TIMESTAMP WITH TIME ZONE NOT NULL
-);
-
--- 5. Tabelas de Aprendizado (Contadores INTEGER para evitar overflow)
+-- 3. Tabelas de Aprendizado
 CREATE TABLE IF NOT EXISTS trading_ai.ai_coin_learning (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coin_id VARCHAR(20) UNIQUE NOT NULL,
@@ -90,26 +50,21 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_coin_learning (
 CREATE TABLE IF NOT EXISTS trading_ai.ai_global_learning (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   total_examples INTEGER DEFAULT 0,
-  total_decisions INTEGER DEFAULT 0,
-  correct_decisions INTEGER DEFAULT 0,
   win_rate SMALLINT DEFAULT 0,
   avg_confidence SMALLINT DEFAULT 0,
   last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS trading_ai.ai_patterns (
+CREATE TABLE IF NOT EXISTS trading_ai.ai_simulated_operations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  pattern_name VARCHAR(100) NOT NULL,
-  coin_id VARCHAR(20),
-  timeframe VARCHAR(10),
-  pattern_type VARCHAR(20),
-  success_rate SMALLINT,
-  occurrence_count INTEGER DEFAULT 1,
-  pattern_data JSONB,
-  last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(pattern_name, coin_id)
+  coin_id VARCHAR(20) NOT NULL,
+  timeframe VARCHAR(5) NOT NULL,
+  entry_price BIGINT,
+  exit_price BIGINT,
+  result VARCHAR(10),
+  confidence_at_entry SMALLINT,
+  timestamp TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
--- Dados Iniciais
 INSERT INTO trading_ai.ai_global_learning (total_examples, win_rate, avg_confidence)
 VALUES (0, 0, 0) ON CONFLICT DO NOTHING;
