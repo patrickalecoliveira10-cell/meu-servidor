@@ -121,8 +121,11 @@ class Simulation {
           logger.info(`[SIM] Simulation closed for ${sim.coin_id}: ${result.toUpperCase()} (${profitLoss.toFixed(2)}%)`);
 
           // Feedback to Learning module to adjust weights
-          if (this.learning) {
+          // Verificação de segurança: só envia para learning se decision_data existe
+          if (this.learning && sim.decision_data && sim.decision_data.indicators_summary) {
             await this.learning.adjustWeightsBasedOnResult(sim, result === 'win');
+          } else if (this.learning) {
+            logger.warn(`[SIM] Skipping learning feedback for ${sim.coin_id}: decision_data or indicators_summary missing`);
           }
         }
       }
