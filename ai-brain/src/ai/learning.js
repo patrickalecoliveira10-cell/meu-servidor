@@ -89,7 +89,10 @@ class Learning {
 
   async adjustWeights(indicatorName, success, coinId = null) {
     try {
-      const learningRate = 0.02; // Aumentado para aprendizado mais rápido no início
+      // Ajuste para Aprendizado Eficiente:
+      // Aumentamos o learningRate inicial para 0.05 se o banco estiver vazio,
+      // permitindo que a IA se adapte rapidamente ao novo mercado.
+      const learningRate = 0.05;
       const currentWeights = await queries.getIndicatorWeights(coinId);
       let indicatorWeight = currentWeights.find(w => w.indicator_name === indicatorName);
 
