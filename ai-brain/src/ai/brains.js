@@ -45,11 +45,15 @@ class Brain {
       // Initialize sub-modules with brain reference
       logger.info('[BRAIN-INIT] Initializing sub-modules...');
       try {
-        if (this.intelligence.init) {
+        logger.info(`[BRAIN-INIT] Checking intelligence.init: ${typeof this.intelligence.init}, exists: ${!!this.intelligence.init}`);
+        if (this.intelligence.init && typeof this.intelligence.init === 'function') {
           await this.intelligence.init(this);
           logger.info('[BRAIN-INIT] Intelligence module initialized');
         } else {
-          logger.warn('[BRAIN-INIT] Intelligence module has no init method');
+          logger.warn('[BRAIN-INIT] Intelligence module has no init method or it is not a function');
+          // Intelligence doesn't need init - set brain reference directly
+          this.intelligence.brain = this;
+          logger.info('[BRAIN-INIT] Intelligence brain reference set directly');
         }
       } catch (e) {
         logger.error('[BRAIN-INIT] Failed to initialize Intelligence module:', e);
