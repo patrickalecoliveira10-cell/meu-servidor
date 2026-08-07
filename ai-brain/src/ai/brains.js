@@ -79,8 +79,11 @@ class Brain {
       // 1. Aprender com o novo exemplo
       await this.learning.processExample(snapshot, decision);
 
-      // 2. Simular para histórico
-      await this.simulation.run(snapshot, decision);
+      // 2. Simular para histórico se a confiança for mínima para aprendizado
+      // Aumentamos para 0.60 para evitar aprender com "ruído"
+      if (decision.confidence >= 0.60) {
+        await this.simulation.run(snapshot, decision);
+      }
 
       // Incrementar contador local para atualização imediata no App
       if (this.intelligence.stats && decision.decision === 'enter') {
@@ -122,7 +125,20 @@ class Brain {
         this.activeRecommendations.delete(id);
       }
     }
-    return Array.from(this.activeRecommendations.values());
+    const recommendations = Array.from(this.activeRecommendations.values());
+    
+    // Debug: Log primeiras 5 recomendações para verificar formato
+    if (recommendations.length > 0) {
+      const sample = recommendations.slice(0, 5).map(r => ({
+        coin_id: r.coin_id,
+        decision: r.decision,
+        confidence: r.confidence,
+        side: r.side
+      }));
+      console.log('[BRAIN-DEBUG] Sample recommendations:', JSON.stringify(sample));
+    }
+    
+    return recommendations;
   }
 
   getStatus() {
