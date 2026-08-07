@@ -113,8 +113,13 @@ class Brain {
       }
       
       // Defensive check - ensure intelligence is initialized
-      if (!this.intelligence || typeof this.intelligence.analyze !== 'function') {
-        logger.error('[BRAIN] Intelligence module not properly initialized');
+      if (!this.intelligence) {
+        logger.error('[BRAIN] Intelligence module is null/undefined');
+        return null;
+      }
+      
+      if (typeof this.intelligence.analyze !== 'function') {
+        logger.error(`[BRAIN] Intelligence.analyze is not a function. Type: ${typeof this.intelligence.analyze}, Keys: ${Object.keys(this.intelligence).join(', ')}`);
         return null;
       }
       
