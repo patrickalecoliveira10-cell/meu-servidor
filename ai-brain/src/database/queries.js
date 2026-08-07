@@ -109,24 +109,23 @@ const queries = {
     } catch (e) { console.error('UpdateCoinLearningError:', e.message); }
   },
 
-  async insertPattern(p) {
+  async updateOperationDynamic(symbol, data) {
     try {
-      const query = `
-        INSERT INTO trading_ai.ai_patterns (pattern_name, coin_id, timeframe, pattern_type, success_rate, occurrence_count, pattern_data, last_seen)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-        ON CONFLICT (pattern_name, coin_id) DO UPDATE SET
-          occurrence_count = trading_ai.ai_patterns.occurrence_count + 1,
-          last_seen = NOW();
-      `;
-      await db.query(query, [p.pattern_name, p.coin_id, p.timeframe, p.pattern_type, Math.round((p.success_rate || 0) * 100), p.occurrence_count || 1, JSON.stringify(p.pattern_data)]);
-    } catch (e) {}
-  },
+      let query = "UPDATE trading_ai.operations SET updated_at = NOW()";
+      const values = [];
+      let i = 1;
 
-  async insertLearningLog(log) {
-    try {
-      const query = 'INSERT INTO trading_ai.ai_learning_logs (log_type, coin_id, message, data, timestamp) VALUES ($1, $2, $3, $4, NOW())';
-      await db.query(query, [log.log_type, log.coin_id, log.message, JSON.stringify(log.data)]);
-    } catch (e) {}
+      if (data.reason) { query += `, last_analysis = $${i++}`; values.push(data.reason); }
+      if (data.partial_exit_done !== undefined) { query += `, partial_exit_done = $${i++}`; values.push(data.partial_exit_done); }
+      if (data.partial_entry_count !== undefined) { query += `, partial_entry_count = $${i++}`; values.push(data.partial_entry_count); }
+      if (data.stop_loss) { query += `, stop_loss = $${i++}`; values.push(BigInt(Math.round(data.stop_loss * 10000000000))); }
+      if (data.trailing_stop) { query += `, trailing_stop = $${i++}`; values.push(BigInt(Math.round(data.trailing_stop * 10000000000))); }
+
+      query += ` WHERE symbol = $${i} AND status = 'OPEN'`;
+      values.push(symbol);
+
+      await db.query(query, values);
+    } catch (e) { console.error('UpdateDynamicError:', e.message); }
   },
 
   async insertSimulatedOperation(sim) {
