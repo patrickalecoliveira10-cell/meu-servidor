@@ -33,6 +33,11 @@ class Brain {
       logger.info(`[BRAIN-INIT] Loading Intelligence from: ${intelPath}`);
       logger.info(`[BRAIN-INIT] File exists: ${require('fs').existsSync(intelPath)}`);
 
+      // Clear require cache to ensure fresh load
+      delete require.cache[require.resolve(intelPath)];
+      delete require.cache[require.resolve(learnPath)];
+      delete require.cache[require.resolve(simPath)];
+
       const Intelligence = require(intelPath);
       const Learning = require(learnPath);
       const Simulation = require(simPath);
