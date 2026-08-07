@@ -81,13 +81,44 @@ class Database {
   async query(text, params) {
     const start = Date.now();
     try {
+      // Se o banco está em read-only, bloqueamos INSERT/UPDATE, mas PERMITIMOS DELETE/TRUNCATE para limpeza
+      const isWriteQuery = /INSERT|UPDATE|CREATE|ALTER|DROP/i.test(text);
+      const isCleanupQuery = /DELETE|TRUNCATE|VACUUM/i.test(text);
+
+      if (global.dbReadOnly && isWriteQuery && !isCleanupQuery) {
+        return { rows: [], rowCount: 0 };
+      }
+
       const result = await this.pool.query(text, params);
       const duration = Date.now() - start;
-      logger.debug('Executed query', { text, duration, rows: result.rowCount });
       return result;
     } catch (error) {
+      if (error.message.includes('read-only')) {
+        if (!global.dbReadOnly) {
+          console.warn('!!! SCANNER DB: READ-ONLY MODE DETECTED !!!');
+          global.dbReadOnly = true;
+          // Tenta limpar imediatamente para destravar
+          this.autoCleanup().catch(() => {});
+        }
+        return { rows: [], rowCount: 0 };
+      }
       logger.error('Query error', { text, error: error.message });
       throw error;
+    }
+  }
+
+  async autoCleanup() {
+    try {
+      logger.info('Running emergency cleanup for Scanner tables...');
+      // Limpa os logs do scanner e snapshots brutos que são os mais pesados
+      await this.pool.query('TRUNCATE TABLE trading_ai.logs CASCADE').catch(() => {});
+      await this.pool.query("DELETE FROM trading_ai.scanner_snapshots WHERE timestamp < NOW() - INTERVAL '6 hours'");
+      await this.pool.query('VACUUM ANALYZE').catch(() => {});
+
+      global.dbReadOnly = false;
+      logger.info('Scanner DB cleanup attempted.');
+    } catch (e) {
+      logger.error('Cleanup failed:', e.message);
     }
   }
 
