@@ -71,13 +71,27 @@ class Database {
   async query(text, params) {
     const start = Date.now();
     try {
+      // Se detectamos que o banco está em read-only, evitamos comandos de modificação
+      const isWriteQuery = /INSERT|UPDATE|DELETE|CREATE|ALTER|DROP/i.test(text);
+      if (global.dbReadOnly && isWriteQuery) {
+        return { rows: [], rowCount: 0 };
+      }
+
       const result = await this.pool.query(text, params);
       const duration = Date.now() - start;
       logger.debug('Executed query', { text, duration, rows: result.rowCount });
       return result;
     } catch (error) {
-      logger.error('Query error', { text, error: error.message });
-      throw error;
+      if (error.message.includes('read-only')) {
+        if (!global.dbReadOnly) {
+          logger.warn('!!! DATABASE ENTERED READ-ONLY MODE - WRITES DISABLED !!!');
+          global.dbReadOnly = true;
+        }
+        return { rows: [], rowCount: 0 };
+      } else {
+        logger.error('Query error', { text, error: error.message });
+        throw error;
+      }
     }
   }
 
