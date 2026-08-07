@@ -12,7 +12,7 @@ const queries = {
     try {
       let query = 'SELECT * FROM trading_ai.ai_indicator_weights';
       let values = [];
-      if (coinId) {
+      if (coinId && coinId !== 'GLOBAL') {
         query += ' WHERE coin_id = $1';
         values = [coinId];
       } else {
@@ -77,6 +77,58 @@ const queries = {
     } catch (e) { console.error('UpdateGlobalError:', e.message); }
   },
 
+  async getCoinLearning(coinId) {
+    try {
+      const result = await db.query('SELECT * FROM trading_ai.ai_coin_learning WHERE coin_id = $1', [coinId]);
+      const row = result.rows[0];
+      if (row) {
+        row.win_rate = (parseFloat(row.win_rate) || 0) / 100;
+        row.avg_confidence = (parseFloat(row.avg_confidence || 0)) / 100;
+      }
+      return row || null;
+    } catch (e) { return null; }
+  },
+
+  async updateCoinLearning(stats) {
+    try {
+      const winRate = Math.round((parseFloat(stats.win_rate) || 0) * 100);
+      const avgConfidence = Math.round((parseFloat(stats.avg_confidence) || 0) * 100);
+
+      const query = `
+        INSERT INTO trading_ai.ai_coin_learning (coin_id, total_examples, total_decisions, correct_decisions, win_rate, avg_confidence, last_updated)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (coin_id) DO UPDATE SET
+          total_examples = EXCLUDED.total_examples,
+          total_decisions = EXCLUDED.total_decisions,
+          correct_decisions = EXCLUDED.correct_decisions,
+          win_rate = EXCLUDED.win_rate,
+          avg_confidence = EXCLUDED.avg_confidence,
+          last_updated = NOW();
+      `;
+      await db.query(query, [stats.coin_id, stats.total_examples, stats.total_decisions || 0, stats.correct_decisions || 0, winRate, avgConfidence]);
+    } catch (e) { console.error('UpdateCoinLearningError:', e.message); }
+  },
+
+  async insertPattern(p) {
+    try {
+      const query = `
+        INSERT INTO trading_ai.ai_patterns (pattern_name, coin_id, timeframe, pattern_type, success_rate, occurrence_count, pattern_data, last_seen)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (pattern_name, coin_id) DO UPDATE SET
+          occurrence_count = trading_ai.ai_patterns.occurrence_count + 1,
+          last_seen = NOW();
+      `;
+      await db.query(query, [p.pattern_name, p.coin_id, p.timeframe, p.pattern_type, Math.round((p.success_rate || 0) * 100), p.occurrence_count || 1, JSON.stringify(p.pattern_data)]);
+    } catch (e) {}
+  },
+
+  async insertLearningLog(log) {
+    try {
+      const query = 'INSERT INTO trading_ai.ai_learning_logs (log_type, coin_id, message, data, timestamp) VALUES ($1, $2, $3, $4, NOW())';
+      await db.query(query, [log.log_type, log.coin_id, log.message, JSON.stringify(log.data)]);
+    } catch (e) {}
+  },
+
   async insertSimulatedOperation(sim) {
     if (global.dbReadOnly) return;
     const query = `
@@ -95,6 +147,42 @@ const queries = {
       sim.profit_loss ? Math.round(sim.profit_loss * 100) : null
     ];
     await db.query(query, values);
+  },
+
+  async getLiveStats() {
+    try {
+      const query = `
+        SELECT
+          (SELECT COUNT(*) FROM trading_ai.operations) as total_real_ops,
+          (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations) as total_simulated_ops,
+          (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations WHERE result = 'win') as total_wins,
+          (SELECT COUNT(*) FROM trading_ai.ai_simulated_operations WHERE result = 'loss') as total_losses,
+          (SELECT total_examples FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as ai_examples,
+          (SELECT total_decisions FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as total_decisions,
+          (SELECT correct_decisions FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as correct_decisions,
+          (SELECT avg_confidence FROM trading_ai.ai_global_learning ORDER BY last_updated DESC LIMIT 1) as avg_confidence
+      `;
+      const result = await db.query(query);
+      const row = result.rows[0];
+      const totalSims = parseInt(row?.total_simulated_ops || 0);
+      const wins = parseInt(row?.total_wins || 0);
+      const losses = parseInt(row?.total_losses || 0);
+      const closed = wins + losses;
+      return {
+        ai_examples: parseInt(row?.ai_examples || 0),
+        total_real_ops: parseInt(row?.total_real_ops || 0),
+        total_simulated_ops: totalSims,
+        total_decisions: parseInt(row?.total_decisions || 0),
+        correct_decisions: parseInt(row?.correct_decisions || 0),
+        avg_confidence: (parseFloat(row?.avg_confidence || 0)) / 100,
+        wins,
+        losses,
+        win_rate: closed > 0 ? wins / closed : 0
+      };
+    } catch (e) {
+      console.error('LiveStatsError:', e.message);
+      return { ai_examples: 0, total_real_ops: 0, total_simulated_ops: 0, total_decisions: 0, correct_decisions: 0, avg_confidence: 0, wins: 0, losses: 0, win_rate: 0 };
+    }
   }
 };
 
