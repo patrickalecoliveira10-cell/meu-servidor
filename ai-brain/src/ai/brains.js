@@ -26,9 +26,16 @@ class Brain {
 
       // Lazy load to break circular dependencies - use absolute path to ensure correct module
       const path = require('path');
-      const Intelligence = require(path.join(__dirname, './intelligence.js'));
-      const Learning = require(path.join(__dirname, './learning.js'));
-      const Simulation = require(path.join(__dirname, './simulation.js'));
+      const intelPath = path.join(__dirname, './intelligence.js');
+      const learnPath = path.join(__dirname, './learning.js');
+      const simPath = path.join(__dirname, './simulation.js');
+
+      logger.info(`[BRAIN-INIT] Loading Intelligence from: ${intelPath}`);
+      logger.info(`[BRAIN-INIT] File exists: ${require('fs').existsSync(intelPath)}`);
+
+      const Intelligence = require(intelPath);
+      const Learning = require(learnPath);
+      const Simulation = require(simPath);
 
       logger.info('[BRAIN-INIT] Modules loaded, instantiating...');
 
