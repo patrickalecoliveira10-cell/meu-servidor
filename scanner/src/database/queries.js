@@ -84,6 +84,104 @@ const queries = {
       `;
       await db.query(fallbackQuery, [coin.symbol]);
     }
+  },
+
+  async getRecentResults(limit = 50) {
+    try {
+      const query = `
+        SELECT 
+          sr.*,
+          c.symbol as coin_symbol,
+          c.name as coin_name
+        FROM trading_ai.scanner_results sr
+        LEFT JOIN trading_ai.coins c ON sr.coin_id = c.id
+        ORDER BY sr.timestamp DESC
+        LIMIT $1;
+      `;
+      const result = await db.query(query, [limit]);
+      return result.rows.map(row => ({
+        ...row,
+        price: parseFloat(row.price) / 10000000000,
+        volume: parseFloat(row.volume),
+        indicators_matched: typeof row.indicators_matched === 'string' 
+          ? JSON.parse(row.indicators_matched) 
+          : row.indicators_matched
+      }));
+    } catch (e) {
+      console.error('Error getting recent results:', e.message);
+      return [];
+    }
+  },
+
+  async getMetrics() {
+    try {
+      const query = `
+        SELECT
+          COUNT(*) as total_scans,
+          COUNT(DISTINCT coin_id) as unique_coins,
+          AVG(score) as avg_score,
+          MAX(score) as max_score,
+          MIN(timestamp) as first_scan,
+          MAX(timestamp) as last_scan
+        FROM trading_ai.scanner_results;
+      `;
+      const result = await db.query(query);
+      return result.rows[0] || {};
+    } catch (e) {
+      console.error('Error getting metrics:', e.message);
+      return {};
+    }
+  },
+
+  async getTopCoins(limit = 10) {
+    try {
+      const query = `
+        SELECT
+          c.symbol,
+          c.name,
+          COUNT(*) as scan_count,
+          AVG(sr.score) as avg_score,
+          MAX(sr.score) as max_score
+        FROM trading_ai.scanner_results sr
+        JOIN trading_ai.coins c ON sr.coin_id = c.id
+        GROUP BY c.id, c.symbol, c.name
+        ORDER BY avg_score DESC
+        LIMIT $1;
+      `;
+      const result = await db.query(query, [limit]);
+      return result.rows;
+    } catch (e) {
+      console.error('Error getting top coins:', e.message);
+      return [];
+    }
+  },
+
+  async getBestOpportunities(limit = 10) {
+    try {
+      const query = `
+        SELECT
+          sr.*,
+          c.symbol as coin_symbol,
+          c.name as coin_name
+        FROM trading_ai.scanner_results sr
+        JOIN trading_ai.coins c ON sr.coin_id = c.id
+        WHERE sr.score >= 60
+        ORDER BY sr.score DESC, sr.timestamp DESC
+        LIMIT $1;
+      `;
+      const result = await db.query(query, [limit]);
+      return result.rows.map(row => ({
+        ...row,
+        price: parseFloat(row.price) / 10000000000,
+        volume: parseFloat(row.volume),
+        indicators_matched: typeof row.indicators_matched === 'string' 
+          ? JSON.parse(row.indicators_matched) 
+          : row.indicators_matched
+      }));
+    } catch (e) {
+      console.error('Error getting best opportunities:', e.message);
+      return [];
+    }
   }
 };
 
