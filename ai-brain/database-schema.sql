@@ -1,4 +1,6 @@
--- AI Brain V1.2.2 - Genesis Reset Final (Otimizado para Aprendizado Eficiente)
+-- AI Brain V1.2.2 - Schema Completo para Render
+-- Execute isso no SQL Editor do Render para criar todas as tabelas
+
 CREATE SCHEMA IF NOT EXISTS trading_ai;
 SET search_path TO trading_ai, public;
 
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.coins (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 3. Pesos dos Indicadores (O "Cérebro" da IA)
+-- 3. Pesos dos Indicadores
 CREATE TABLE IF NOT EXISTS trading_ai.ai_indicator_weights (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   indicator_name VARCHAR(50) NOT NULL,
@@ -38,7 +40,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_indicator_weights (
   UNIQUE(indicator_name, coin_id, timeframe)
 );
 
--- 4. Operações Reais e Simulações
+-- 4. Operações Reais
 CREATE TABLE IF NOT EXISTS trading_ai.operations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     symbol VARCHAR(20) NOT NULL,
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.operations (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 5. Operações Simuladas
 CREATE TABLE IF NOT EXISTS trading_ai.ai_simulated_operations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coin_id VARCHAR(20) NOT NULL,
@@ -75,7 +78,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_simulated_operations (
   timestamp TIMESTAMP WITH TIME ZONE NOT NULL
 );
 
--- 5. Tabelas de Aprendizado e Decisões
+-- 6. Decisões da IA
 CREATE TABLE IF NOT EXISTS trading_ai.ai_decisions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coin_id VARCHAR(20),
@@ -87,6 +90,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_decisions (
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 7. Aprendizado Global
 CREATE TABLE IF NOT EXISTS trading_ai.ai_global_learning (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   total_examples INTEGER DEFAULT 0,
@@ -97,6 +101,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_global_learning (
   last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 8. Aprendizado por Moeda
 CREATE TABLE IF NOT EXISTS trading_ai.ai_coin_learning (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   coin_id VARCHAR(20) UNIQUE NOT NULL,
@@ -108,6 +113,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_coin_learning (
   last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- 9. Padrões
 CREATE TABLE IF NOT EXISTS trading_ai.ai_patterns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pattern_name VARCHAR(100) NOT NULL,
@@ -121,6 +127,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_patterns (
   UNIQUE(pattern_name, coin_id)
 );
 
+-- 10. Logs de Aprendizado
 CREATE TABLE IF NOT EXISTS trading_ai.ai_learning_logs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   log_type VARCHAR(50),
@@ -130,7 +137,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_learning_logs (
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 6. Sessões e Resultados do Scanner
+-- 11. Sessões do Scanner
 CREATE TABLE IF NOT EXISTS trading_ai.scanner_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   status VARCHAR(20),
@@ -144,6 +151,7 @@ CREATE TABLE IF NOT EXISTS trading_ai.scanner_sessions (
   end_time TIMESTAMP WITH TIME ZONE
 );
 
+-- 12. Resultados do Scanner
 CREATE TABLE IF NOT EXISTS trading_ai.scanner_results (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id UUID REFERENCES trading_ai.scanner_sessions(id) ON DELETE SET NULL,
