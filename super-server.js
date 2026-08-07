@@ -100,7 +100,6 @@ async function start() {
             marketScanner.setBrain(Brain);
         }
 
-        await executorService.initialize();
         await executorService.start();
 
         setTimeout(() => {
