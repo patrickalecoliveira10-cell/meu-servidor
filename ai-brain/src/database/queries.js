@@ -149,6 +149,40 @@ const queries = {
     await db.query(query, values);
   },
 
+  async getOpenSimulatedOperations(coinId) {
+    try {
+      const query = `
+        SELECT * FROM trading_ai.ai_simulated_operations
+        WHERE coin_id = $1 AND result IS NULL
+        ORDER BY timestamp DESC
+      `;
+      const result = await db.query(query, [coinId]);
+      return result.rows.map(row => ({
+        ...row,
+        entry_price: parseFloat(row.entry_price) / 10000000000,
+        stop_loss: parseFloat(row.stop_loss) / 10000000000,
+        take_profit: parseFloat(row.take_profit) / 10000000000,
+        confidence_at_entry: parseFloat(row.confidence_at_entry) / 100
+      }));
+    } catch (e) { return []; }
+  },
+
+  async updateSimulatedOperation(sim) {
+    if (global.dbReadOnly) return;
+    const query = `
+      UPDATE trading_ai.ai_simulated_operations
+      SET exit_price = $1, result = $2, profit_loss = $3, duration_seconds = $4
+      WHERE id = $5
+    `;
+    await db.query(query, [
+      BigInt(Math.round(sim.exit_price * 10000000000)),
+      sim.result,
+      Math.round(sim.profit_loss * 100),
+      sim.duration_seconds,
+      sim.id
+    ]);
+  },
+
   async getLiveStats() {
     try {
       const query = `
