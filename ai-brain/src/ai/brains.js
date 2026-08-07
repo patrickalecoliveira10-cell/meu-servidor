@@ -68,6 +68,13 @@ class Brain {
   async processMarketSnapshot(snapshot) {
     try {
       const { coin_id } = snapshot;
+      
+      // Defensive check - ensure intelligence is initialized
+      if (!this.intelligence || typeof this.intelligence.analyze !== 'function') {
+        logger.error('[BRAIN] Intelligence module not properly initialized');
+        return null;
+      }
+      
       const decision = await this.intelligence.analyze(snapshot, this.weights, this.config);
 
       // 1. Aprender com o novo exemplo
