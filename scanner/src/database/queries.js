@@ -3,68 +3,15 @@ const db = require('./connection');
 const queries = {
   // Inserir snapshot do mercado
   async insertMarketSnapshot(snapshot) {
-    const query = `
-      INSERT INTO trading_ai.scanner_snapshots (
-        coin_id, timeframe, open, high, low, close, volume, indicators, timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9/1000.0))
-      ON CONFLICT (coin_id, timeframe, timestamp) DO UPDATE SET
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume,
-        indicators = EXCLUDED.indicators
-      RETURNING id;
-    `;
-    const values = [
-      snapshot.coin_id,
-      snapshot.timeframe,
-      BigInt(Math.round((snapshot.open || 0) * 10000000000)),
-      BigInt(Math.round((snapshot.high || 0) * 10000000000)),
-      BigInt(Math.round((snapshot.low || 0) * 10000000000)),
-      BigInt(Math.round((snapshot.close || 0) * 10000000000)),
-      BigInt(Math.round(parseFloat(snapshot.volume) || 0)),
-      JSON.stringify(snapshot.indicators || {}),
-      snapshot.timestamp
-    ];
-    try {
-      const result = await db.query(query, values);
-      return result.rows[0]?.id;
-    } catch (e) {
-      console.error(`Error inserting snapshot for ${snapshot.coin_id}:`, e.message);
-      return null;
-    }
+    // DESATIVADO para economizar espaço (Limite 512MB atingido)
+    // A IA processa em memória no Brain.
+    return 'skipped';
   },
 
   // Inserir indicadores
   async insertIndicator(indicator) {
-    // Mapeia tipos de indicadores para tabelas específicas se existirem prefixo indicator_
-    let tableName = indicator.type;
-    if (!tableName.startsWith('indicator_')) {
-      tableName = `indicator_${tableName.toLowerCase()}`;
-    }
-
-    const fullTableName = `trading_ai.${tableName}`;
-
-    const query = `
-      INSERT INTO ${fullTableName} (
-        coin_id, timeframe, period, value, timestamp
-      ) VALUES ($1, $2, $3, $4, to_timestamp($5/1000.0))
-      ON CONFLICT (coin_id, timeframe, period, timestamp)
-      DO UPDATE SET value = EXCLUDED.value
-      RETURNING id;
-    `;
-    const values = [
-      indicator.coin_id,
-      indicator.timeframe,
-      indicator.period,
-      BigInt(Math.round((indicator.value || 0) * 10000000000)),
-      indicator.timestamp
-    ];
-    try {
-      const result = await db.query(query, values);
-      return result.rows[0]?.id;
-    } catch (e) {
-      console.error(`Error inserting indicator ${indicator.type} for ${indicator.coin_id}:`, e.message);
-      return null;
-    }
+    // DESATIVADO para economizar espaço
+    return 'skipped';
   },
 
   // Inserir resultado do scanner
