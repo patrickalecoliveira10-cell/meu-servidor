@@ -47,9 +47,11 @@ CREATE TABLE IF NOT EXISTS trading_ai.operations (
     exit_price BIGINT,
     stop_loss BIGINT,
     take_profit BIGINT,
-    trailing_stop SMALLINT,
+    trailing_stop INTEGER,
     status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
     profit_loss SMALLINT,
+    partial_exit_done BOOLEAN DEFAULT FALSE,
+    partial_entry_count INTEGER DEFAULT 0,
     last_analysis TEXT,
     opened_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     close_time TIMESTAMP WITH TIME ZONE,
@@ -93,6 +95,39 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_global_learning (
   win_rate SMALLINT DEFAULT 0,
   avg_confidence SMALLINT DEFAULT 0,
   last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS trading_ai.ai_coin_learning (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  coin_id VARCHAR(20) UNIQUE NOT NULL,
+  total_examples INTEGER DEFAULT 0,
+  total_decisions INTEGER DEFAULT 0,
+  correct_decisions INTEGER DEFAULT 0,
+  win_rate SMALLINT DEFAULT 0,
+  avg_confidence SMALLINT DEFAULT 0,
+  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS trading_ai.ai_patterns (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pattern_name VARCHAR(100) NOT NULL,
+  coin_id VARCHAR(20),
+  timeframe VARCHAR(10),
+  pattern_type VARCHAR(20),
+  success_rate SMALLINT,
+  occurrence_count INTEGER DEFAULT 1,
+  pattern_data JSONB,
+  last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(pattern_name, coin_id)
+);
+
+CREATE TABLE IF NOT EXISTS trading_ai.ai_learning_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  log_type VARCHAR(50),
+  coin_id VARCHAR(20),
+  message TEXT,
+  data JSONB,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 6. Sessões e Resultados do Scanner
