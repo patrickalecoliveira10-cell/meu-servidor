@@ -1,157 +1,128 @@
-const db = require('./connection');
+-- AI Brain V1.2.2 - Genesis Reset Final (Otimizado para Aprendizado Eficiente)
+CREATE SCHEMA IF NOT EXISTS trading_ai;
+SET search_path TO trading_ai, public;
 
-const queries = {
-  // Inserir snapshot do mercado
-  async insertMarketSnapshot(snapshot) {
-    // DESATIVADO para economizar espaço (Limite 512MB atingido)
-    // A IA processa em memória no Brain.
-    return 'skipped';
-  },
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
-  // Inserir indicadores
-  async insertIndicator(indicator) {
-    // DESATIVADO para economizar espaço
-    return 'skipped';
-  },
+-- 1. Logs do Sistema
+CREATE TABLE IF NOT EXISTS trading_ai.logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  level VARCHAR(10),
+  message TEXT,
+  context JSONB,
+  source VARCHAR(50),
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-  // Inserir resultado do scanner
-  async insertScannerResult(result) {
-    // Garante que o session_id é um UUID ou nulo
-    const sessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.session_id)
-      ? result.session_id
-      : null;
+-- 2. Moedas
+CREATE TABLE IF NOT EXISTS trading_ai.coins (
+  id VARCHAR(20) PRIMARY KEY,
+  symbol VARCHAR(20) UNIQUE NOT NULL,
+  name VARCHAR(100),
+  exchange VARCHAR(20) DEFAULT 'bybit',
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-    const query = `
-      INSERT INTO trading_ai.scanner_results (
-        session_id, coin_id, timeframe, score, price, volume, volatility, indicators_matched, timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, to_timestamp($9/1000.0))
-      RETURNING id;
-    `;
-    const values = [
-      sessionId,
-      result.coin_id,
-      result.timeframe,
-      Math.round(result.score || 0),
-      BigInt(Math.round((result.price || 0) * 10000000000)),
-      BigInt(Math.round(parseFloat(result.volume) || 0)),
-      Math.round(result.volatility || 0),
-      JSON.stringify(result.indicators_summary),
-      result.timestamp
-    ];
-    try {
-      const dbResult = await db.query(query, values);
-      return dbResult.rows[0]?.id;
-    } catch (e) {
-      console.error(`Error inserting scanner result for ${result.coin_id}:`, e.message);
-      return null;
-    }
-  },
+-- 3. Pesos dos Indicadores (O "Cérebro" da IA)
+CREATE TABLE IF NOT EXISTS trading_ai.ai_indicator_weights (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  indicator_name VARCHAR(50) NOT NULL,
+  coin_id VARCHAR(20) DEFAULT 'GLOBAL',
+  timeframe VARCHAR(10) DEFAULT 'ALL',
+  weight SMALLINT DEFAULT 50,
+  performance_score SMALLINT DEFAULT 50,
+  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(indicator_name, coin_id, timeframe)
+);
 
-  async createScannerSession(data) {
-    try {
-      // Check if scanner_sessions table exists, if not, it's a legacy schema
-      const query = `INSERT INTO trading_ai.scanner_sessions (status, coins_count, timeframes, start_time) VALUES ('running', $1, $2, NOW()) RETURNING id;`;
-      const result = await db.query(query, [data.coins_count, JSON.stringify(data.timeframes)]);
-      return result.rows[0].id;
-    } catch (e) {
-      console.warn('Scanner sessions table might be missing, returning dummy ID');
-      return '00000000-0000-0000-0000-000000000000';
-    }
-  },
+-- 4. Operações Reais e Simulações
+CREATE TABLE IF NOT EXISTS trading_ai.operations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol VARCHAR(20) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    entry_price BIGINT NOT NULL,
+    exit_price BIGINT,
+    stop_loss BIGINT,
+    take_profit BIGINT,
+    trailing_stop SMALLINT,
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+    profit_loss SMALLINT,
+    last_analysis TEXT,
+    opened_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    close_time TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-  async updateScannerSession(sessionId, data) {
-    try {
-      const query = `UPDATE trading_ai.scanner_sessions SET status = $1, end_time = NOW(), coins_scanned = $2, snapshots_created = $3, errors_count = $4, duration_seconds = $5 WHERE id = $6;`;
-      await db.query(query, [data.status, data.coins_scanned, data.snapshots_created, data.errors_count, data.duration_seconds, sessionId]);
-    } catch (e) {
-       // Silencioso
-    }
-  },
+CREATE TABLE IF NOT EXISTS trading_ai.ai_simulated_operations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  coin_id VARCHAR(20) NOT NULL,
+  timeframe VARCHAR(5) NOT NULL,
+  side VARCHAR(10),
+  entry_price BIGINT,
+  exit_price BIGINT,
+  stop_loss BIGINT,
+  take_profit BIGINT,
+  result VARCHAR(10),
+  profit_loss SMALLINT,
+  confidence_at_entry SMALLINT,
+  duration_seconds INTEGER,
+  decision_data JSONB,
+  timestamp TIMESTAMP WITH TIME ZONE NOT NULL
+);
 
-  async insertLog(log) {
-    try {
-      // Se o banco estiver em modo read-only, evitamos o spam de erro
-      if (global.dbReadOnly) return null;
+-- 5. Tabelas de Aprendizado e Decisões
+CREATE TABLE IF NOT EXISTS trading_ai.ai_decisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  coin_id VARCHAR(20),
+  timeframe VARCHAR(5),
+  decision VARCHAR(20),
+  side VARCHAR(10),
+  price BIGINT,
+  confidence SMALLINT,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-      const query = `INSERT INTO trading_ai.logs (level, message, context, source) VALUES ($1, $2, $3, $4) RETURNING id;`;
-      const result = await db.query(query, [log.level, log.message, JSON.stringify(log.context), log.source]);
-      return result.rows[0]?.id;
-    } catch (e) {
-      if (e.message.includes('read-only')) {
-        global.dbReadOnly = true;
-        console.warn('!!! DATABASE IS READ-ONLY - Check storage limits !!!');
-      }
-      return null;
-    }
-  },
+CREATE TABLE IF NOT EXISTS trading_ai.ai_global_learning (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  total_examples INTEGER DEFAULT 0,
+  total_decisions INTEGER DEFAULT 0,
+  correct_decisions INTEGER DEFAULT 0,
+  win_rate SMALLINT DEFAULT 0,
+  avg_confidence SMALLINT DEFAULT 0,
+  last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-  async upsertCoin(coin) {
-    const query = `
-      INSERT INTO trading_ai.coins (id, symbol, name, exchange, is_active, updated_at)
-      VALUES ($1, $1, $1, 'bybit', true, NOW())
-      ON CONFLICT (id) DO UPDATE SET is_active = true, updated_at = NOW();
-    `;
-    await db.query(query, [coin.symbol]);
-  },
+-- 6. Sessões e Resultados do Scanner
+CREATE TABLE IF NOT EXISTS trading_ai.scanner_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  status VARCHAR(20),
+  coins_count INTEGER,
+  coins_scanned INTEGER DEFAULT 0,
+  snapshots_created INTEGER DEFAULT 0,
+  errors_count INTEGER DEFAULT 0,
+  duration_seconds INTEGER,
+  timeframes JSONB,
+  start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  end_time TIMESTAMP WITH TIME ZONE
+);
 
-  // BUSCAS PARA O APP ANDROID
-  async getRecentResults(limit = 50) {
-    const query = `
-      SELECT r.id, r.session_id, r.coin_id, r.timeframe, r.score,
-             (r.price::float / 10000000000.0) as price,
-             r.volume, r.volatility, r.indicators_matched, r.timestamp, r.created_at,
-             c.symbol
-      FROM trading_ai.scanner_results r
-      JOIN trading_ai.coins c ON r.coin_id = c.id
-      ORDER BY r.timestamp DESC
-      LIMIT $1;
-    `;
-    const result = await db.query(query, [limit]);
-    return result.rows;
-  },
+CREATE TABLE IF NOT EXISTS trading_ai.scanner_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id UUID REFERENCES trading_ai.scanner_sessions(id) ON DELETE SET NULL,
+  coin_id VARCHAR(20) NOT NULL,
+  timeframe VARCHAR(5) NOT NULL,
+  score SMALLINT,
+  price BIGINT,
+  volume BIGINT,
+  volatility SMALLINT,
+  indicators_matched JSONB,
+  timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 
-  async getCoins(limit = 100) {
-    const query = `SELECT * FROM trading_ai.coins ORDER BY updated_at DESC LIMIT $1;`;
-    const result = await db.query(query, [limit]);
-    return result.rows;
-  },
-
-  async getTopOpportunities(limit = 20, minScore = 70) {
-    const query = `
-      SELECT r.id, r.session_id, r.coin_id, r.timeframe, r.score,
-             (r.price::float / 10000000000.0) as price,
-             r.volume, r.volatility, r.indicators_matched, r.timestamp, r.created_at,
-             c.symbol
-      FROM trading_ai.scanner_results r
-      JOIN trading_ai.coins c ON r.coin_id = c.id
-      WHERE r.score >= $2
-      ORDER BY r.score DESC, r.timestamp DESC
-      LIMIT $1;
-    `;
-    const result = await db.query(query, [limit, minScore]);
-    return result.rows;
-  },
-
-  async getScannerStatistics() {
-    try {
-      const query = `
-        SELECT
-          (SELECT COUNT(*) FROM trading_ai.coins) as total_coins,
-          (SELECT COUNT(*) FROM trading_ai.scanner_snapshots WHERE created_at > NOW() - INTERVAL '24 hours') as snapshots_24h,
-          (SELECT COUNT(*) FROM trading_ai.scanner_results WHERE created_at > NOW() - INTERVAL '24 hours') as results_24h
-      `;
-      const result = await db.query(query);
-      const row = result.rows[0];
-      return {
-        total_coins: parseInt(row.total_coins || 0),
-        snapshots_24h: parseInt(row.snapshots_24h || 0),
-        results_24h: parseInt(row.results_24h || 0)
-      };
-    } catch (e) {
-      console.error('Error in getScannerStatistics:', e.message);
-      return { total_coins: 0, snapshots_24h: 0, results_24h: 0 };
-    }
-  }
-};
-
-module.exports = queries;
+-- Dados Iniciais
+INSERT INTO trading_ai.ai_global_learning (total_examples, win_rate, avg_confidence)
+VALUES (0, 0, 0) ON CONFLICT DO NOTHING;
