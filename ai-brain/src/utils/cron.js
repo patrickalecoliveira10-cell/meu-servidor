@@ -1,8 +1,19 @@
 const cron = require('node-cron');
 const queries = require('../database/queries.js');
+const db = require('../database/connection.js');
 const logger = require('../logs/logger.js');
 
 const initCron = () => {
+  // Limpeza de manutenção do banco (Cada 6 horas)
+  cron.schedule('0 */6 * * *', async () => {
+    try {
+      logger.info('[CRON] Verificando tamanho do banco de dados para manutenção...');
+      await db.checkSizeAndCleanup();
+    } catch (error) {
+      logger.error('[CRON] Erro na tarefa de limpeza agendada:', error);
+    }
+  });
+
   // Atualizar estatísticas diárias todos os dias às 23:55
   cron.schedule('55 23 * * *', async () => {
     try {
