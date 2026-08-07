@@ -293,10 +293,9 @@ class Intelligence {
   }
 
   determineDecision(confidence, analysis) {
-    // Exige: confiança >= 55% + side=buy
-    // Removida exigência de hasConfirmation para permitir mais operações
-    if (confidence >= 0.55 && analysis.side === 'buy') return 'enter';
-    if (confidence >= 0.45) return 'wait';
+    // Exige: confiança >= 60% + side=buy (Aumentado de 55% para reduzir ruído)
+    if (confidence >= 0.60 && analysis.side === 'buy') return 'enter';
+    if (confidence >= 0.50) return 'wait';
     return 'not_enter';
   }
 
