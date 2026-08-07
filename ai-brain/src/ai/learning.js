@@ -126,6 +126,13 @@ class Learning {
   async adjustWeightsBasedOnResult(simulation, success) {
     try {
       const { decision_data, coin_id } = simulation;
+      
+      // Verificação de segurança para evitar crash quando decision_data é null
+      if (!decision_data || !decision_data.indicators_summary) {
+        logger.warn(`[LEARNING] Skipping weight adjustment for ${coin_id}: decision_data or indicators_summary is null`);
+        return;
+      }
+
       const indicators = decision_data.indicators_summary;
 
       if (!indicators) return;
