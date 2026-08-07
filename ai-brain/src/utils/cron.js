@@ -4,13 +4,23 @@ const db = require('../database/connection.js');
 const logger = require('../logs/logger.js');
 
 const initCron = () => {
-  // Limpeza de manutenção do banco (Cada 6 horas)
-  cron.schedule('0 */6 * * *', async () => {
+  // Limpeza de manutenção do banco (Cada 1 hora para evitar estouro de 512MB)
+  cron.schedule('0 * * * *', async () => {
     try {
       logger.info('[CRON] Verificando tamanho do banco de dados para manutenção...');
       await db.checkSizeAndCleanup();
     } catch (error) {
       logger.error('[CRON] Erro na tarefa de limpeza agendada:', error);
+    }
+  });
+
+  // Limpeza profunda diária (Às 03:00) para garantir espaço livre
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      logger.info('[CRON] Iniciando limpeza profunda diária (TRUNCATE logs)...');
+      await db.autoCleanup();
+    } catch (error) {
+      logger.error('[CRON] Erro na limpeza profunda:', error);
     }
   });
 
