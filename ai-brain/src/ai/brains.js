@@ -24,10 +24,11 @@ class Brain {
     try {
       logger.info('Initializing AI Brain...');
 
-      // Lazy load to break circular dependencies
-      const Intelligence = require('./intelligence.js');
-      const Learning = require('./learning.js');
-      const Simulation = require('./simulation.js');
+      // Lazy load to break circular dependencies - use absolute path to ensure correct module
+      const path = require('path');
+      const Intelligence = require(path.join(__dirname, './intelligence.js'));
+      const Learning = require(path.join(__dirname, './learning.js'));
+      const Simulation = require(path.join(__dirname, './simulation.js'));
 
       logger.info('[BRAIN-INIT] Modules loaded, instantiating...');
 
