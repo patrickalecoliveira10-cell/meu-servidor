@@ -260,7 +260,7 @@ const executorService = {
       if (!symbol) return { status: 'error', reason: 'invalid_symbol' };
 
       // SÓ PROCESSA SE FOR SINAL DE ENTRADA
-      if (decision.decision !== 'ENTRY' && decision.decision !== 'enter') {
+      if (decision.decision !== 'ENTRY' && decision.decision !== 'enter' && decision.decision !== 'ENTER') {
         return { status: 'ignored', reason: 'not_entry_signal' };
       }
 
