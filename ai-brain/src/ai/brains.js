@@ -17,6 +17,7 @@ class Brain {
     this.intelligence = null;
     this.learning = null;
     this.simulation = null;
+    this.isInitialized = false;
   }
 
   async initialize() {
@@ -28,24 +29,40 @@ class Brain {
       const Learning = require('./learning.js');
       const Simulation = require('./simulation.js');
 
+      logger.info('[BRAIN-INIT] Modules loaded, instantiating...');
+
       // Instantiate modules directly
       this.intelligence = new Intelligence();
       this.learning = new Learning();
       this.simulation = new Simulation();
+
+      logger.info(`[BRAIN-INIT] Modules instantiated: Intel(${!!this.intelligence}), Learn(${!!this.learning}), Sim(${!!this.simulation})`);
 
       if (!this.intelligence || !this.learning || !this.simulation) {
           throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence}), Learn(${!!this.learning}), Sim(${!!this.simulation})`);
       }
 
       // Initialize sub-modules with brain reference
-      if (this.intelligence.init) await this.intelligence.init(this);
-      if (this.learning.init) await this.learning.init(this);
-      if (this.simulation.init) await this.simulation.init(this);
+      logger.info('[BRAIN-INIT] Initializing sub-modules...');
+      if (this.intelligence.init) {
+        await this.intelligence.init(this);
+        logger.info('[BRAIN-INIT] Intelligence module initialized');
+      }
+      if (this.learning.init) {
+        await this.learning.init(this);
+        logger.info('[BRAIN-INIT] Learning module initialized');
+      }
+      if (this.simulation.init) {
+        await this.simulation.init(this);
+        logger.info('[BRAIN-INIT] Simulation module initialized');
+      }
 
       await this.loadWeights();
+      this.isInitialized = true;
       logger.info('AI Brain ready');
     } catch (error) {
       logger.error('Failed to initialize Brain:', error);
+      throw error; // Re-throw to prevent silent failures
     }
   }
 
@@ -68,6 +85,12 @@ class Brain {
   async processMarketSnapshot(snapshot) {
     try {
       const { coin_id } = snapshot;
+      
+      // Check if brain is fully initialized
+      if (!this.isInitialized) {
+        logger.warn('[BRAIN] Brain not yet initialized, skipping snapshot processing');
+        return null;
+      }
       
       // Defensive check - ensure intelligence is initialized
       if (!this.intelligence || typeof this.intelligence.analyze !== 'function') {
