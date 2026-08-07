@@ -12,7 +12,7 @@ class Brain {
       },
       coins: {}
     };
-    this.config = { confidence_threshold: 0.68 };
+    this.config = { confidence_threshold: 0.60 };
     this.activeRecommendations = new Map();
     this.intelligence = null;
     this.learning = null;
