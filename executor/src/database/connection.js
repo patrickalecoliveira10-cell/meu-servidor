@@ -71,9 +71,11 @@ class Database {
   async query(text, params) {
     const start = Date.now();
     try {
-      // Se detectamos que o banco está em read-only, evitamos comandos de modificação
-      const isWriteQuery = /INSERT|UPDATE|DELETE|CREATE|ALTER|DROP/i.test(text);
-      if (global.dbReadOnly && isWriteQuery) {
+      // Se o banco está em read-only, bloqueamos INSERT/UPDATE, mas PERMITIMOS DELETE/TRUNCATE para limpeza
+      const isWriteQuery = /INSERT|UPDATE|CREATE|ALTER|DROP/i.test(text);
+      const isCleanupQuery = /DELETE|TRUNCATE|VACUUM/i.test(text);
+
+      if (global.dbReadOnly && isWriteQuery && !isCleanupQuery) {
         return { rows: [], rowCount: 0 };
       }
 
@@ -84,14 +86,29 @@ class Database {
     } catch (error) {
       if (error.message.includes('read-only')) {
         if (!global.dbReadOnly) {
-          logger.warn('!!! DATABASE ENTERED READ-ONLY MODE - WRITES DISABLED !!!');
+          logger.warn('!!! EXECUTOR DB: READ-ONLY DETECTADO - INICIANDO AUTO-CURA !!!');
           global.dbReadOnly = true;
+          // Tenta a limpeza agressiva para liberar espaço
+          this.autoCleanup().catch(() => {});
         }
         return { rows: [], rowCount: 0 };
       } else {
         logger.error('Query error', { text, error: error.message });
         throw error;
       }
+    }
+  }
+
+  async autoCleanup() {
+    try {
+      logger.info('Executando limpeza de emergência no Executor...');
+      await this.pool.query('TRUNCATE TABLE trading_ai.logs CASCADE').catch(() => {});
+      await this.pool.query("DELETE FROM trading_ai.scanner_snapshots WHERE timestamp < NOW() - INTERVAL '12 hours'").catch(() => {});
+      await this.pool.query('VACUUM ANALYZE').catch(() => {});
+      global.dbReadOnly = false;
+      logger.info('Tentativa de desbloqueio do banco concluída.');
+    } catch (e) {
+      logger.error('Falha na auto-cura do Executor:', e.message);
     }
   }
 
