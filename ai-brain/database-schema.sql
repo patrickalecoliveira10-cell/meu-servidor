@@ -1,4 +1,4 @@
--- AI Brain V1.2.1 - Genesis Reset (Estabilidade e Eficiência Total)
+-- AI Brain V1.2.2 - Genesis Reset Final (Otimizado para Aprendizado Eficiente)
 CREATE SCHEMA IF NOT EXISTS trading_ai;
 SET search_path TO trading_ai, public;
 
@@ -83,19 +83,6 @@ CREATE TABLE IF NOT EXISTS trading_ai.ai_decisions (
   price BIGINT,
   confidence SMALLINT,
   timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS trading_ai.ai_patterns (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  pattern_name VARCHAR(50),
-  coin_id VARCHAR(20),
-  timeframe VARCHAR(5),
-  pattern_type VARCHAR(20),
-  success_rate SMALLINT,
-  occurrence_count INTEGER,
-  pattern_data JSONB,
-  last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(pattern_name, coin_id)
 );
 
 CREATE TABLE IF NOT EXISTS trading_ai.ai_global_learning (
