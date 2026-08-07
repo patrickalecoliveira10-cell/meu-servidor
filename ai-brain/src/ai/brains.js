@@ -44,17 +44,33 @@ class Brain {
 
       // Initialize sub-modules with brain reference
       logger.info('[BRAIN-INIT] Initializing sub-modules...');
-      if (this.intelligence.init) {
-        await this.intelligence.init(this);
-        logger.info('[BRAIN-INIT] Intelligence module initialized');
+      try {
+        if (this.intelligence.init) {
+          await this.intelligence.init(this);
+          logger.info('[BRAIN-INIT] Intelligence module initialized');
+        } else {
+          logger.warn('[BRAIN-INIT] Intelligence module has no init method');
+        }
+      } catch (e) {
+        logger.error('[BRAIN-INIT] Failed to initialize Intelligence module:', e);
       }
-      if (this.learning.init) {
-        await this.learning.init(this);
-        logger.info('[BRAIN-INIT] Learning module initialized');
+      
+      try {
+        if (this.learning.init) {
+          await this.learning.init(this);
+          logger.info('[BRAIN-INIT] Learning module initialized');
+        }
+      } catch (e) {
+        logger.error('[BRAIN-INIT] Failed to initialize Learning module:', e);
       }
-      if (this.simulation.init) {
-        await this.simulation.init(this);
-        logger.info('[BRAIN-INIT] Simulation module initialized');
+      
+      try {
+        if (this.simulation.init) {
+          await this.simulation.init(this);
+          logger.info('[BRAIN-INIT] Simulation module initialized');
+        }
+      } catch (e) {
+        logger.error('[BRAIN-INIT] Failed to initialize Simulation module:', e);
       }
 
       await this.loadWeights();
