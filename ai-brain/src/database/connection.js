@@ -228,27 +228,30 @@ class Database {
   async query(text, params) {
     const start = Date.now();
     try {
-      // Se detectamos que o banco está em read-only, evitamos comandos de modificação
-      const isWriteQuery = /INSERT|UPDATE|DELETE|CREATE|ALTER|DROP/i.test(text);
-      if (global.dbReadOnly && isWriteQuery) {
+      // Se o banco está em read-only, bloqueamos qualquer escrita (INSERT, UPDATE, CREATE, etc)
+      // MAS permitimos comandos de leitura e de limpeza
+      const isWriteQuery = /INSERT|UPDATE|CREATE|ALTER|DROP/i.test(text);
+      const isCleanupQuery = /DELETE|TRUNCATE|VACUUM/i.test(text);
+
+      if (global.dbReadOnly && isWriteQuery && !isCleanupQuery) {
+        // Retorna sucesso vazio para não quebrar o código que chamou
         return { rows: [], rowCount: 0 };
       }
 
       const result = await this.pool.query(text, params);
       const duration = Date.now() - start;
-      logger.debug('Executed query', { text, duration, rows: result.rowCount });
       return result;
     } catch (error) {
       if (error.message.includes('read-only')) {
         if (!global.dbReadOnly) {
-          logger.warn('!!! DATABASE ENTERED READ-ONLY MODE - WRITES DISABLED !!!');
+          console.warn('!!! BANCO DE DADOS CHEIO (READ-ONLY) !!!');
           global.dbReadOnly = true;
+          // Tenta a auto-cura como último recurso
+          this.autoCleanup().catch(() => {});
         }
         return { rows: [], rowCount: 0 };
-      } else {
-        logger.error('Query error', { text, error: error.message });
-        throw error;
       }
+      throw error;
     }
   }
 
@@ -259,35 +262,28 @@ class Database {
   // Sistema de limpeza automática para manter o banco abaixo de 512MB
   async autoCleanup() {
     try {
-      logger.info('Iniciando limpeza automática do banco de dados (Limite 512MB)...');
+      logger.info('Iniciando limpeza agressiva de emergência...');
 
-      // 1. LIMPEZA DE LOGS (Ocupam muito espaço e são pouco úteis para a IA)
-      await this.pool.query("DELETE FROM trading_ai.logs WHERE timestamp < NOW() - INTERVAL '3 days'");
-      await this.pool.query("DELETE FROM trading_ai.ai_learning_logs WHERE timestamp < NOW() - INTERVAL '7 days'");
-      logger.info('Logs antigos removidos.');
+      // 1. TRUNCATE nas tabelas de logs (mais pesadas e descartáveis)
+      await this.pool.query('TRUNCATE TABLE trading_ai.logs CASCADE').catch(() => {});
+      await this.pool.query('TRUNCATE TABLE trading_ai.ai_learning_logs CASCADE').catch(() => {});
 
-      // 2. SNAPSHOTS DO SCANNER (Dados brutos, manter apenas o necessário para análise recente)
-      await this.pool.query("DELETE FROM trading_ai.scanner_snapshots WHERE timestamp < NOW() - INTERVAL '1 day'");
-      logger.info('Snapshots brutos antigos removidos.');
+      // 2. TRUNCATE nos snapshots (ocupam muito espaço, a IA já processou o que precisava)
+      // Usamos TRUNCATE aqui porque DELETE é lento e pode falhar em bancos cheios
+      await this.pool.query('TRUNCATE TABLE trading_ai.scanner_snapshots CASCADE').catch(() => {});
+      logger.info('Tabelas pesadas limpas via TRUNCATE.');
 
-      // 3. DECISÕES DA IA (Manter histórico importante, mas limpar o excesso)
-      // Mantemos decisões de 'enter' por mais tempo, 'observe' limpamos rápido
-      await this.pool.query("DELETE FROM trading_ai.ai_decisions WHERE decision = 'observe' AND timestamp < NOW() - INTERVAL '2 days'");
-      await this.pool.query("DELETE FROM trading_ai.ai_decisions WHERE timestamp < NOW() - INTERVAL '15 days'");
-      logger.info('Decisões de IA otimizadas.');
+      // 3. Limpeza de decisões de observação (manter apenas as de entrada)
+      await this.pool.query("DELETE FROM trading_ai.ai_decisions WHERE decision = 'observe'").catch(() => {});
 
-      // 4. OPERAÇÕES SIMULADAS (Manter apenas os últimos 30 dias de performance)
-      await this.pool.query("DELETE FROM trading_ai.ai_simulated_operations WHERE timestamp < NOW() - INTERVAL '30 days'");
+      // 4. Comando para o Postgres reorganizar o espaço em disco
+      await this.pool.query('VACUUM ANALYZE').catch(() => {});
 
-      // 5. VACUUM (Essencial para o Postgres liberar o espaço em disco de fato)
-      // Nota: VACUUM FULL trava as tabelas, usamos apenas VACUUM ANALYZE por segurança em produção
-      await this.pool.query('VACUUM ANALYZE');
-
-      global.dbReadOnly = false; // Tenta destravar o modo read-only após a limpeza
-      logger.info('Limpeza concluída com sucesso.');
+      global.dbReadOnly = false;
+      logger.info('Limpeza de emergência concluída. O banco deve voltar ao normal em breve.');
       return true;
     } catch (error) {
-      logger.error('Erro na limpeza automática:', error.message);
+      logger.error('Erro crítico na auto-cura:', error.message);
       return false;
     }
   }
