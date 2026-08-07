@@ -222,7 +222,17 @@ const executorService = {
         // 2. FILTRAR O MELHOR SINAL DE ENTRADA (Modo Sniper)
         if (!this.isProcessingEntry) {
           const entrySignals = signals
-            .filter(s => (s.decision === 'enter' || s.decision === 'ENTRY') && (s.confidence >= 0.55))
+            .filter(s => {
+              const decisionMatch = s.decision === 'enter' || s.decision === 'ENTRY' || s.decision === 'ENTER';
+              const confidenceMatch = s.confidence >= 0.55;
+              // Debug: logar por que cada sinal foi filtrado
+              if (!decisionMatch) {
+                logger.debug(`[EXECUTOR-${cycleId}] ${s.coin_id} filtrado: decision=${s.decision} (não é enter/ENTRY/ENTER)`);
+              } else if (!confidenceMatch) {
+                logger.debug(`[EXECUTOR-${cycleId}] ${s.coin_id} filtrado: confidence=${s.confidence} (< 0.55)`);
+              }
+              return decisionMatch && confidenceMatch;
+            })
             .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
           logger.info(`[EXECUTOR-${cycleId}] Sinais filtrados: ${entrySignals.length} de ${signals.length} totais (confiança >= 0.55)`);
