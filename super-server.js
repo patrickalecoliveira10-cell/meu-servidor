@@ -55,6 +55,7 @@ const brainRoutes = require('./ai-brain/src/routes/index');
 const executorRoutes = require('./executor/src/routes/index');
 const scannerRoutes = require('./scanner/src/routes/scanner');
 const scannerController = require('./scanner/src/controllers/scannerController');
+const { initCron } = require('./ai-brain/src/utils/cron');
 
 // Endpoints de compatibilidade Android
 app.get('/api/status', (req, res) => scannerController.getStatus(req, res));
@@ -76,6 +77,13 @@ async function start() {
     try {
         logger.info('--- SISTEMA UNIFICADO: INICIANDO ---');
         await db.testConnection();
+
+        // Verificação inicial de tamanho e limpeza
+        await db.checkSizeAndCleanup();
+
+        // Inicia o agendador de tarefas (Limpeza automática e estatísticas)
+        initCron();
+
         await Brain.initialize();
 
         // EXPORTE GLOBAL PARA OS CONTROLLERS ACESSAREM A INSTÂNCIA VIVA
