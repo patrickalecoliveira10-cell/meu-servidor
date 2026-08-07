@@ -24,20 +24,14 @@ class Brain {
       logger.info('Initializing AI Brain...');
 
       // Lazy load to break circular dependencies
-      const intelModule = require('./intelligence.js');
-      const learningModule = require('./learning.js');
-      const simulationModule = require('./simulation.js');
+      const Intelligence = require('./intelligence.js');
+      const Learning = require('./learning.js');
+      const Simulation = require('./simulation.js');
 
-      // Defensive assignment (handles class or potential partially loaded instance)
-      const resolveModule = (mod) => {
-        if (typeof mod === 'function') return new mod();
-        if (mod && mod.init) return mod;
-        return null;
-      };
-
-      this.intelligence = resolveModule(intelModule);
-      this.learning = resolveModule(learningModule);
-      this.simulation = resolveModule(simulationModule);
+      // Instantiate modules directly
+      this.intelligence = new Intelligence();
+      this.learning = new Learning();
+      this.simulation = new Simulation();
 
       if (!this.intelligence || !this.learning || !this.simulation) {
           throw new Error(`One or more modules failed to load correctly: Intel(${!!this.intelligence}), Learn(${!!this.learning}), Sim(${!!this.simulation})`);
