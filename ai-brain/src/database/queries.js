@@ -1,7 +1,6 @@
 const db = require('./connection.js');
 
-const queries = {
-  // SALVA APENAS O ÚLTIMO RESULTADO (Economiza 99% de banda)
+const queries = {  // MODO ECONOMIA: Atualiza a mesma linha em vez de criar milhares
   async insertScannerResult(data) {
     try {
       const upsertQuery = `
@@ -19,7 +18,7 @@ const queries = {
         data.price, 
         JSON.stringify(data.indicators_summary)
       ]);
-    } catch (e) { /* Silencioso para evitar logs infinitos */ }
+    } catch (e) { /* Silencioso */ }
   },
 
   async getGlobalLearning() {
@@ -75,11 +74,10 @@ const queries = {
 
   async insertSimulatedOperation(sim) {
     try {
-        const query = `
+        await db.query(`
           INSERT INTO trading_ai.ai_simulated_operations (coin_id, timeframe, entry_price, stop_loss, take_profit, confidence_at_entry, timestamp)
           VALUES ($1, $2, $3, $4, $5, $6, NOW())
-        `;
-        await db.query(query, [
+        `, [
           sim.coin_id, sim.timeframe, 
           BigInt(Math.round(sim.entry_price * 10000000000)),
           BigInt(Math.round(sim.stop_loss * 10000000000)),
@@ -91,8 +89,8 @@ const queries = {
 
   async getLiveStats() {
     try {
-      const result = await db.query(`SELECT COUNT(*) as total FROM trading_ai.operations`);
-      return { ai_examples: 100, total_real_ops: result.rows[0].total };
+      const res = await db.query(`SELECT COUNT(*) as total FROM trading_ai.operations`);
+      return { ai_examples: 100, total_real_ops: parseInt(res.rows[0].total) };
     } catch (e) { return { ai_examples: 0, total_real_ops: 0 }; }
   }
 };
